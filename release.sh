@@ -6,8 +6,8 @@
 set -e
 cd "$(dirname "$0")"
 
-VERSION="1.1"        # version visible — incrémenter à chaque release
-BUILD_NUMBER="2"     # +1 à chaque release
+VERSION="1.2"        # version visible — incrémenter à chaque release
+BUILD_NUMBER="3"     # +1 à chaque release
 
 PRODUCT="CrocShare"
 DIST="dist"
@@ -18,7 +18,9 @@ DOWNLOAD_URL="https://github.com/mysteropodes/CrocShare/releases/download/v${VER
 ./make-app.sh
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PRODUCT.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PRODUCT.app/Contents/Info.plist"
-codesign --force --deep --sign - "$PRODUCT.app"
+# Re-signature de l'app (l'Info.plist vient de changer) — même identité que make-app.sh.
+codesign --force --options runtime --timestamp \
+    --sign "Apple Development: cyrildrouinm@icloud.com (9D5K76CQ8M)" "$PRODUCT.app"
 
 mkdir -p "$DIST"
 ZIP="$DIST/${PRODUCT}-${VERSION}.zip"

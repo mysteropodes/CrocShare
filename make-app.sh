@@ -87,7 +87,26 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Signature ad-hoc : nécessaire pour les notifications et Gatekeeper local.
-codesign --force --deep --sign - "$APP"
+# ── Signature ─────────────────────────────────────────────────
+# Certificat Apple Development (même que RecentDrop) : signature stable entre
+# les builds — indispensable pour Sparkle (l'updater refuse une identité qui
+# change) et pour le trousseau/pare-feu. Composants Sparkle signés un par un
+# (--deep casse les XPC services de Sparkle).
+SIGN_IDENTITY="Apple Development: cyrildrouinm@icloud.com (9D5K76CQ8M)"
+
+SPARKLE_FW="$APP/Contents/Frameworks/Sparkle.framework"
+XPC_DIR="$SPARKLE_FW/Versions/B/XPCServices"
+if [[ -d "$XPC_DIR" ]]; then
+    for x in "$XPC_DIR"/*.xpc; do
+        [[ -d "$x" ]] && codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$x"
+    done
+fi
+[[ -f "$SPARKLE_FW/Versions/B/Autoupdate" ]] && \
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_FW/Versions/B/Autoupdate"
+[[ -d "$SPARKLE_FW/Versions/B/Updater.app" ]] && \
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_FW/Versions/B/Updater.app"
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_FW"
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/bin/croc"
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 
 echo "✅ $APP construit. Lance-le avec : open $APP"

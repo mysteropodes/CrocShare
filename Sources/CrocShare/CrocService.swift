@@ -126,8 +126,11 @@ enum CrocService {
     }
 
     /// Envoie des fichiers : réussit seulement si un receveur s'est connecté avant le timeout.
+    /// --no-local : sans lui, croc ouvre un relai local sur la machine et le receveur
+    /// du même réseau s'y connecte en entrant → bloqué par le pare-feu macOS.
+    /// Tout passe par le relai (connexions sortantes des deux côtés) : fiable partout.
     static func send(code: String, paths: [String], timeout: TimeInterval) async -> CrocResult {
-        await run(arguments: relayArgs + ["send"] + paths, secret: code, timeout: timeout)
+        await run(arguments: relayArgs + ["send", "--no-local"] + paths, secret: code, timeout: timeout)
     }
 
     /// Tente de recevoir sur un code ; échoue silencieusement si personne n'envoie.
