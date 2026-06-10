@@ -36,9 +36,9 @@ notification à l'arrivée, historique persisté dans
 
 ## Installation (DMG)
 
-1. Installer croc : `brew install croc`
-2. Ouvrir le DMG et glisser CrocShare dans Applications.
-3. **Important** — l'app n'est pas notariée par Apple : macOS la bloque au
+1. Ouvrir le DMG et glisser CrocShare dans Applications — **croc est embarqué
+   dans l'app** (binaire universel officiel, licence MIT), rien d'autre à installer.
+2. **Important** — l'app n'est pas notariée par Apple : macOS la bloque au
    premier lancement (« Impossible d'ouvrir l'app »). Pour débloquer :
 
 ```sh
@@ -47,15 +47,10 @@ xattr -dr com.apple.quarantine /Applications/CrocShare.app
 
 (une seule fois ; les mises à jour automatiques Sparkle ne reposent pas le problème)
 
-## Prérequis (build depuis les sources)
+## Construire et lancer (depuis les sources)
 
 ```sh
-brew install croc
-```
-
-## Construire et lancer
-
-```sh
+./fetch-croc.sh   # une seule fois : récupère le binaire croc officiel dans vendor/
 ./make-app.sh
 open CrocShare.app
 ```

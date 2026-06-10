@@ -7,9 +7,18 @@ swift build -c release
 
 APP="CrocShare.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources/bin"
 
 cp .build/release/CrocShare "$APP/Contents/MacOS/CrocShare"
+
+# croc embarqué (binaire universel officiel, licence MIT) : récupéré par
+# fetch-croc.sh dans vendor/. L'app le préfère à toute install système.
+if [[ ! -x vendor/croc ]]; then
+    echo "⚠️  vendor/croc manquant — lance ./fetch-croc.sh d'abord"
+    exit 1
+fi
+cp vendor/croc "$APP/Contents/Resources/bin/croc"
+cp vendor/LICENSE-croc "$APP/Contents/Resources/bin/LICENSE-croc" 2>/dev/null || true
 
 # Sparkle.framework (récupéré via SPM) : embarqué dans le bundle + rpath,
 # sinon dyld ne le trouve pas au lancement.

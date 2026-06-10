@@ -27,6 +27,11 @@ enum CrocService {
     ]
 
     static func findCroc() -> String? {
+        // croc embarqué dans le bundle : aucune installation requise.
+        if let bundled = Bundle.main.resourcePath.map({ $0 + "/bin/croc" }),
+           FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
         for p in candidatePaths where FileManager.default.isExecutableFile(atPath: p) {
             return p
         }

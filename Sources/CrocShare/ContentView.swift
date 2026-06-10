@@ -189,7 +189,7 @@ struct WelcomeView: View {
                 .foregroundStyle(.secondary)
 
             if store.crocPath == nil {
-                Label("croc n'est pas installé — lance « brew install croc » dans le Terminal",
+                Label("croc introuvable — reconstruis l'app avec make-app.sh (croc est normalement embarqué)",
                       systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
             }
@@ -1111,7 +1111,7 @@ struct SettingsSheet: View {
                 }
             }
             if store.crocPath == nil {
-                Text("Installe-le avec :  brew install croc")
+                Text("croc est normalement embarqué dans l'app ; à défaut : brew install croc")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
             }

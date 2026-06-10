@@ -3,3 +3,4 @@ CrocShare.app/
 dist/
 .DS_Store
 .swiftpm/
+vendor/
