@@ -24,6 +24,8 @@ cp vendor/LICENSE-croc "$APP/Contents/Resources/bin/LICENSE-croc" 2>/dev/null ||
 # sinon dyld ne le trouve pas au lancement.
 SPARKLE_XCFW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 cp -R "$SPARKLE_XCFW" "$APP/Contents/Frameworks/Sparkle.framework"
+RIVE_XCFW=".build/artifacts/rive-ios/RiveRuntime/RiveRuntime.xcframework/macos-arm64_x86_64/RiveRuntime.framework"
+cp -R "$RIVE_XCFW" "$APP/Contents/Frameworks/RiveRuntime.framework"
 install_name_tool -delete_rpath "@executable_path/../Frameworks" \
     "$APP/Contents/MacOS/CrocShare" 2>/dev/null || true
 install_name_tool -add_rpath "@executable_path/../Frameworks" \
@@ -45,7 +47,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundleVersion</key><string>1</string>
-    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>LSMinimumSystemVersion</key><string>13.1</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSUIElement</key><true/>
     <!-- ── Sparkle (mises à jour auto, même clé que RecentDrop) ───── -->
@@ -106,6 +108,7 @@ fi
 [[ -d "$SPARKLE_FW/Versions/B/Updater.app" ]] && \
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_FW/Versions/B/Updater.app"
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_FW"
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/RiveRuntime.framework"
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/bin/croc"
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 

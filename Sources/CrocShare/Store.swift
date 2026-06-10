@@ -472,7 +472,8 @@ final class AppStore: ObservableObject {
             notifyMessage(msg)
             // Images et vidéos reçues dans le chat : téléchargement automatique
             // pour affichage/lecture directe dans la bulle.
-            if let attachment = msg.attachment, attachment.isImage || attachment.isVideo {
+            if let attachment = msg.attachment,
+               attachment.isImage || attachment.isVideo || attachment.isRive {
                 enqueueDownload(
                     file: RemoteFile(path: attachment.relPath,
                                      size: attachment.size, mtime: msg.date),

@@ -33,6 +33,9 @@ struct Attachment: Codable, Hashable {
         ["png", "jpg", "jpeg", "gif", "heic", "webp", "tiff"]
             .contains((fileName as NSString).pathExtension.lowercased())
     }
+    var isRive: Bool {
+        (fileName as NSString).pathExtension.lowercased() == "riv"
+    }
 }
 
 /// Une room type Slack (espace de travail) : regroupe des canaux et des membres.

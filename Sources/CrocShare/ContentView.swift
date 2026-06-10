@@ -788,6 +788,9 @@ struct ChatBubble: View {
                 if let attachment = message.attachment {
                     AttachmentBubble(message: message, attachment: attachment, isMine: isMine)
                 }
+                if let riveURL = RiveLinkPreview.riveLink(in: message.text) {
+                    RiveLinkPreview(url: riveURL)
+                }
                 if !message.text.isEmpty {
                     Text(formattedText)
                         .textSelection(.enabled)
@@ -815,32 +818,6 @@ struct ChatBubble: View {
                 Label(isMine ? "Supprimer pour tout le monde" : "Supprimer pour moi",
                       systemImage: "trash")
             }
-        }
-    }
-}
-
-/// Lecteur vidéo stable : l'AVPlayer est créé une seule fois à l'apparition
-/// et libéré à la disparition. (Le créer dans `body` à chaque rafraîchissement
-/// de la liste faisait planter l'app.)
-struct VideoBubble: View {
-    let url: URL
-    @State private var player: AVPlayer?
-
-    var body: some View {
-        ZStack {
-            if let player {
-                VideoPlayer(player: player)
-            } else {
-                Color.black.opacity(0.85)
-                Image(systemName: "play.circle").font(.largeTitle).foregroundStyle(.white)
-            }
-        }
-        .frame(width: 300, height: 180)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .onAppear { if player == nil { player = AVPlayer(url: url) } }
-        .onDisappear {
-            player?.pause()
-            player = nil
         }
     }
 }
@@ -882,6 +859,8 @@ struct AttachmentBubble: View {
         Group {
             if isDownloaded, let url = localURL, attachment.isVideo {
                 VideoBubble(url: url)
+            } else if isDownloaded, let url = localURL, attachment.isRive {
+                RiveBubble(url: url)
             } else if isDownloaded, let url = localURL, attachment.isImage,
                       let image = NSImage(contentsOf: url) {
                 Image(nsImage: image)
