@@ -19,6 +19,11 @@ install_name_tool -delete_rpath "@executable_path/../Frameworks" \
     "$APP/Contents/MacOS/CrocShare" 2>/dev/null || true
 install_name_tool -add_rpath "@executable_path/../Frameworks" \
     "$APP/Contents/MacOS/CrocShare"
+# Nettoyage du rpath résiduel vers le toolchain Xcode (inutile hors machine de dev).
+TOOLCHAIN_RPATH=$(otool -l "$APP/Contents/MacOS/CrocShare" | grep -o '/Applications/Xcode.app[^ ]*' | head -1 || true)
+if [[ -n "$TOOLCHAIN_RPATH" ]]; then
+    install_name_tool -delete_rpath "$TOOLCHAIN_RPATH" "$APP/Contents/MacOS/CrocShare" 2>/dev/null || true
+fi
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
