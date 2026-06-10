@@ -1020,7 +1020,7 @@ struct PairingSheet: View {
                 } else {
                     Text("Saisis le code que ton contact t'a communiqué.")
                         .font(.callout).foregroundStyle(.secondary)
-                    TextField("share-xxxx-xxxx-xxxx", text: $joinCode)
+                    TextField("ex : k7f3m2p9q4r8", text: $joinCode)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 260)
                         .onSubmit { pairing.join(code: joinCode) }

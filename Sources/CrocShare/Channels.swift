@@ -9,7 +9,11 @@ enum Channels {
         let key = SymmetricKey(data: Data(secret.utf8))
         let mac = HMAC<SHA256>.authenticationCode(for: Data(label.utf8), using: key)
         let hex = mac.map { String(format: "%02x", $0) }.joined()
-        return "cs-" + String(hex.prefix(24))
+        // ⚠️ Un seul bloc, sans tiret ni préfixe commun : croc utilise le premier
+        // segment du code (avant le premier tiret) comme identifiant de SALLE sur
+        // le relai. Un préfixe commun type "cs-" fait collisionner tous les canaux
+        // de tous les utilisateurs dans la même salle ("room full", PAKE failed).
+        return String(hex.prefix(26))
     }
 
     /// Canal sur lequel `from` publie sa liste de fichiers à destination de `to`.
@@ -28,10 +32,10 @@ enum Channels {
     }
 
     /// Code d'appairage à usage unique, lisible par un humain.
+    /// Un seul bloc sans tiret (même raison : la salle relai = premier segment).
     static func newPairingCode() -> String {
         let chars = Array("abcdefghjkmnpqrstuvwxyz23456789")
-        let part = { String((0..<4).map { _ in chars.randomElement()! }) }
-        return "share-\(part())-\(part())-\(part())"
+        return String((0..<12).map { _ in chars.randomElement()! })
     }
 
     static func newSecret() -> String {

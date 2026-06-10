@@ -61,9 +61,9 @@ final class PairingService: ObservableObject {
                 return
             }
 
-            // L'invité renvoie son identité sur <code>-ack.
+            // L'invité renvoie son identité sur <code>ak (sans tiret : salle unique).
             let ackDir = tempDir()
-            let gotAck = await CrocService.receive(code: code + "-ack", outDir: ackDir, timeout: 120)
+            let gotAck = await CrocService.receive(code: code + "ak", outDir: ackDir, timeout: 120)
             guard gotAck.ok,
                   let ackData = try? Data(contentsOf: ackDir.appendingPathComponent("crocshare-pairing.json")),
                   let peer = try? JSONDecoder().decode(PairingPayload.self, from: ackData),
@@ -80,7 +80,10 @@ final class PairingService: ObservableObject {
 
     /// Côté invité : saisit le code affiché chez l'hôte.
     func join(code: String) {
-        let code = code.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Normalisation : espaces et tirets retirés (les codes n'en contiennent plus).
+        let code = code.lowercased()
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
         guard !code.isEmpty else { return }
         state = .joining
 
@@ -102,7 +105,7 @@ final class PairingService: ObservableObject {
             let ackFile = ackDir.appendingPathComponent("crocshare-pairing.json")
             if let ackData = try? JSONEncoder().encode(me) {
                 try? ackData.write(to: ackFile)
-                _ = await CrocService.send(code: code + "-ack", paths: [ackFile.path], timeout: 120)
+                _ = await CrocService.send(code: code + "ak", paths: [ackFile.path], timeout: 120)
             }
 
             store.contacts.append(Contact(id: peer.id, name: peer.name, secret: secret))
