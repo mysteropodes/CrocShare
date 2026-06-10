@@ -289,14 +289,23 @@ final class SyncEngine: ObservableObject {
             try? FileManager.default.removeItem(at: reqFile)
             guard sent.ok else { continue }
 
+            // Le serveur en face met 1-3 s à ouvrir la salle de livraison
+            // (latence réseau) : se connecter trop tôt = « room not ready ».
+            try? await Task.sleep(for: .seconds(3))
+
             // Réception dans un dossier temporaire, puis déplacement à l'emplacement
             // exact dans le dossier cloud (croc dépose les fichiers à plat).
+            // Le sender attend jusqu'à 3 min : une connexion ratée se rattrape
+            // en retentant la MÊME salle avant de refaire une demande complète.
             tmpOut = tempDir("download-\(requestID)")
-            received = await CrocService.receive(code: Channels.files(secret: contact.secret,
-                                                                      requestID: requestID),
-                                                 outDir: tmpOut,
-                                                 timeout: 24 * 3600, stallTimeout: 180)
-            store.logSync(contact.name, "réception fichier ← (essai \(attempt))", received)
+            let filesCode = Channels.files(secret: contact.secret, requestID: requestID)
+            for subAttempt in 1...3 where !received.ok && !Task.isCancelled {
+                received = await CrocService.receive(code: filesCode, outDir: tmpOut,
+                                                     timeout: 24 * 3600, stallTimeout: 180)
+                store.logSync(contact.name,
+                              "réception fichier ← (essai \(attempt).\(subAttempt))", received)
+                if !received.ok { try? await Task.sleep(for: .seconds(3)) }
+            }
         }
 
         if received.ok {
