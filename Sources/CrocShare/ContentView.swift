@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var showPairingSheet = false
     @State private var showSettings = false
     @State private var showNewChannel = false
+    @State private var showNewRoom = false
+    @State private var newChannelRoom: Room?
 
     var body: some View {
         NavigationSplitView {
@@ -22,25 +24,51 @@ struct ContentView: View {
                         Label("Tous les contacts", systemImage: "person.3")
                             .tag(Self.broadcastID)
                     }
-                    Section("Canaux") {
-                        ForEach(store.channels) { channel in
-                            HStack {
-                                Label("\(channel.name)", systemImage: "number")
-                                Spacer()
-                                UnreadBadge(count: store.unreadCount(forChannel: channel))
+                    // Rooms façon Slack : chaque room contient ses canaux.
+                    ForEach(store.rooms) { room in
+                        Section {
+                            ForEach(store.channels.filter { $0.roomID == room.id }) { channel in
+                                ChannelRow(channel: channel, selection: $selection)
                             }
-                                .tag(channel.id)
-                                .contextMenu {
-                                    Button("Supprimer le canal", role: .destructive) {
-                                        store.channels.removeAll { $0.id == channel.id }
-                                        if selection == channel.id { selection = nil }
+                            if room.createdBy == store.config.myID {
+                                Button {
+                                    newChannelRoom = room
+                                    showNewChannel = true
+                                } label: {
+                                    Label("Nouveau canal…", systemImage: "plus.circle")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        } header: {
+                            HStack {
+                                Label(room.name, systemImage: "building.2")
+                                Spacer()
+                            }
+                            .contextMenu {
+                                if room.createdBy == store.config.myID {
+                                    Button("Supprimer la room", role: .destructive) {
+                                        store.removeRoom(room.id)
                                     }
                                 }
+                            }
+                        }
+                    }
+                    Section("Canaux") {
+                        ForEach(store.channels.filter { $0.roomID == nil }) { channel in
+                            ChannelRow(channel: channel, selection: $selection)
                         }
                         Button {
+                            newChannelRoom = nil
                             showNewChannel = true
                         } label: {
                             Label("Nouveau canal…", systemImage: "plus.circle")
+                        }
+                        .buttonStyle(.plain)
+                        Button {
+                            showNewRoom = true
+                        } label: {
+                            Label("Nouvelle room…", systemImage: "building.2.crop.circle.badge.plus")
                         }
                         .buttonStyle(.plain)
                     }
@@ -89,7 +117,10 @@ struct ContentView: View {
             SettingsSheet()
         }
         .sheet(isPresented: $showNewChannel) {
-            NewChannelSheet()
+            NewChannelSheet(room: newChannelRoom)
+        }
+        .sheet(isPresented: $showNewRoom) {
+            NewRoomSheet()
         }
         .frame(minWidth: 760, minHeight: 480)
     }
@@ -442,7 +473,29 @@ struct ChannelChatView: View {
     }
 }
 
-struct NewChannelSheet: View {
+/// Ligne de canal dans la barre latérale.
+struct ChannelRow: View {
+    @EnvironmentObject var store: AppStore
+    let channel: Channel
+    @Binding var selection: UUID?
+
+    var body: some View {
+        HStack {
+            Label(channel.name, systemImage: "number")
+            Spacer()
+            UnreadBadge(count: store.unreadCount(forChannel: channel))
+        }
+        .tag(channel.id)
+        .contextMenu {
+            Button("Supprimer le canal", role: .destructive) {
+                store.channels.removeAll { $0.id == channel.id }
+                if selection == channel.id { selection = nil }
+            }
+        }
+    }
+}
+
+struct NewRoomSheet: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
     @State private var name = ""
@@ -450,7 +503,52 @@ struct NewChannelSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Nouveau canal").font(.title3.bold())
+            Text("Nouvelle room").font(.title3.bold())
+            TextField("Nom de la room (ex. studio)", text: $name)
+                .textFieldStyle(.roundedBorder)
+            Text("Membres").font(.headline)
+            ForEach(store.contacts) { contact in
+                Toggle(contact.name, isOn: Binding(
+                    get: { selected.contains(contact.id) },
+                    set: { on in
+                        if on { selected.insert(contact.id) } else { selected.remove(contact.id) }
+                    }
+                ))
+            }
+            Text("La room et ses canaux apparaîtront chez les membres à leur prochaine connexion.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Annuler") { dismiss() }
+                Button("Créer") {
+                    store.rooms.append(Room(
+                        id: UUID(),
+                        name: name.trimmingCharacters(in: .whitespaces),
+                        memberIDs: Array(selected),
+                        createdBy: store.config.myID
+                    ))
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || selected.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 380)
+    }
+}
+
+struct NewChannelSheet: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) var dismiss
+    var room: Room?
+    @State private var name = ""
+    @State private var selected = Set<UUID>()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(room.map { "Nouveau canal dans « \($0.name) »" } ?? "Nouveau canal")
+                .font(.title3.bold())
             TextField("Nom du canal (ex. projet-x)", text: $name)
                 .textFieldStyle(.roundedBorder)
             Text("Membres").font(.headline)
@@ -472,7 +570,8 @@ struct NewChannelSheet: View {
                         id: UUID(),
                         name: name.trimmingCharacters(in: .whitespaces),
                         memberIDs: Array(selected),
-                        createdBy: store.config.myID
+                        createdBy: store.config.myID,
+                        roomID: room?.id
                     ))
                     dismiss()
                 }
@@ -482,6 +581,10 @@ struct NewChannelSheet: View {
         }
         .padding(24)
         .frame(width: 380)
+        .onAppear {
+            // Dans une room, les membres de la room sont présélectionnés.
+            if let room { selected = Set(room.memberIDs) }
+        }
     }
 }
 
@@ -716,6 +819,32 @@ struct ChatBubble: View {
     }
 }
 
+/// Lecteur vidéo stable : l'AVPlayer est créé une seule fois à l'apparition
+/// et libéré à la disparition. (Le créer dans `body` à chaque rafraîchissement
+/// de la liste faisait planter l'app.)
+struct VideoBubble: View {
+    let url: URL
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        ZStack {
+            if let player {
+                VideoPlayer(player: player)
+            } else {
+                Color.black.opacity(0.85)
+                Image(systemName: "play.circle").font(.largeTitle).foregroundStyle(.white)
+            }
+        }
+        .frame(width: 300, height: 180)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .onAppear { if player == nil { player = AVPlayer(url: url) } }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
+    }
+}
+
 /// Pièce jointe dans une bulle : vidéo lisible sur place, image affichée,
 /// sinon bouton de téléchargement (même file d'attente que les fichiers).
 struct AttachmentBubble: View {
@@ -752,9 +881,7 @@ struct AttachmentBubble: View {
     var body: some View {
         Group {
             if isDownloaded, let url = localURL, attachment.isVideo {
-                VideoPlayer(player: AVPlayer(url: url))
-                    .frame(width: 300, height: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                VideoBubble(url: url)
             } else if isDownloaded, let url = localURL, attachment.isImage,
                       let image = NSImage(contentsOf: url) {
                 Image(nsImage: image)
@@ -966,6 +1093,14 @@ struct RemoteFileRow: View {
         }
     }
 
+    /// Le fichier est-il déjà téléchargé localement ?
+    var localURL: URL {
+        store.downloadFolderURL(for: contact).appendingPathComponent(file.path)
+    }
+    var isDownloaded: Bool {
+        FileManager.default.fileExists(atPath: localURL.path)
+    }
+
     var body: some View {
         HStack {
             Image(systemName: "doc")
@@ -975,7 +1110,16 @@ struct RemoteFileRow: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if let pending {
+            if isDownloaded {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([localURL])
+                } label: {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                .buttonStyle(.plain)
+                .help("Déjà téléchargé — afficher dans le Finder")
+            } else if let pending {
                 switch pending.status {
                 case .transferring:
                     ProgressView().controlSize(.small)

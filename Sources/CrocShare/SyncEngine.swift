@@ -119,6 +119,9 @@ final class SyncEngine: ObservableObject {
                     if let channels = manifest.channels {
                         store.ingestChannels(channels, from: contact)
                     }
+                    if let rooms = manifest.rooms {
+                        store.ingestRooms(rooms, from: contact)
+                    }
                     if !wasOnline {
                         Notifier.notify(title: "CrocShare",
                                         body: "\(contact.name) est en ligne")

@@ -10,6 +10,7 @@ final class AppStore: ObservableObject {
     @Published var manifests: [UUID: Manifest] = [:] { didSet { saveManifests() } }
     @Published var chats: [UUID: [ChatMessage]] = [:] { didSet { saveChats() } }
     @Published var channels: [Channel] = [] { didSet { saveChannels() } }
+    @Published var rooms: [Room] = [] { didSet { saveRooms() } }
     /// Suppressions de messages à propager (contactID → ids des messages supprimés).
     @Published var pendingDeletes: [UUID: [UUID]] = [:] { didSet { saveDeletes() } }
     @Published var lastSeen: [UUID: Date] = [:]
@@ -66,6 +67,7 @@ final class AppStore: ObservableObject {
     private var channelsURL: URL { Self.supportDir.appendingPathComponent("channels.json") }
     private var lastReadURL: URL { Self.supportDir.appendingPathComponent("lastread.json") }
     private var deletesURL: URL { Self.supportDir.appendingPathComponent("deletes.json") }
+    private var roomsURL: URL { Self.supportDir.appendingPathComponent("rooms.json") }
 
     init() {
         let dec = JSONDecoder()
@@ -106,6 +108,10 @@ final class AppStore: ObservableObject {
         if let data = try? Data(contentsOf: channelsURL),
            let list = try? dec.decode([Channel].self, from: data) {
             channels = list
+        }
+        if let data = try? Data(contentsOf: roomsURL),
+           let list = try? dec.decode([Room].self, from: data) {
+            rooms = list
         }
         if let data = try? Data(contentsOf: lastReadURL),
            let map = try? dec.decode([String: Date].self, from: data) {
@@ -166,6 +172,7 @@ final class AppStore: ObservableObject {
              to: chatsURL)
     }
     private func saveChannels() { save(channels, to: channelsURL) }
+    private func saveRooms() { save(rooms, to: roomsURL) }
     private func saveLastRead() {
         save(Dictionary(uniqueKeysWithValues: lastRead.map { ($0.key.uuidString, $0.value) }),
              to: lastReadURL)
@@ -404,6 +411,26 @@ final class AppStore: ObservableObject {
         channels[idx].memberIDs = memberIDs
     }
 
+    /// Intègre les rooms reçues d'un contact (création, mise à jour, retrait).
+    func ingestRooms(_ incoming: [Room], from contact: Contact) {
+        for room in incoming {
+            if let idx = rooms.firstIndex(where: { $0.id == room.id }) {
+                if rooms[idx] != room { rooms[idx] = room }
+            } else {
+                rooms.append(room)
+                Notifier.notify(title: "Nouvelle room",
+                                body: "Tu as été ajouté à la room « \(room.name) »")
+            }
+        }
+        let incomingIDs = Set(incoming.map(\.id))
+        rooms.removeAll { $0.createdBy == contact.id && !incomingIDs.contains($0.id) }
+    }
+
+    func removeRoom(_ id: UUID) {
+        rooms.removeAll { $0.id == id }
+        channels.removeAll { $0.roomID == id && $0.createdBy == config.myID }
+    }
+
     /// Copie un fichier déposé dans le chat vers le dossier partagé
     /// (sous Chat/<canal ou contact>/) et retourne la pièce jointe à envoyer.
     func importChatFile(_ url: URL, scopeName: String) -> Attachment? {
@@ -441,7 +468,18 @@ final class AppStore: ObservableObject {
         thread.append(contentsOf: fresh)
         thread.sort { $0.date < $1.date }
         chats[contact.id] = thread
-        for msg in fresh { notifyMessage(msg) }
+        for msg in fresh {
+            notifyMessage(msg)
+            // Images et vidéos reçues dans le chat : téléchargement automatique
+            // pour affichage/lecture directe dans la bulle.
+            if let attachment = msg.attachment, attachment.isImage || attachment.isVideo {
+                enqueueDownload(
+                    file: RemoteFile(path: attachment.relPath,
+                                     size: attachment.size, mtime: msg.date),
+                    contact: contact
+                )
+            }
+        }
     }
 
     /// Notification d'un message entrant, avec le contexte (canal, pièce jointe).
@@ -576,6 +614,7 @@ final class AppStore: ObservableObject {
             manifest.messages = outbox(for: contact)
             manifest.ackIDs = receivedIDs(for: contact)
             manifest.channels = channels.filter { $0.memberIDs.contains(contact.id) }
+            manifest.rooms = rooms.filter { $0.memberIDs.contains(contact.id) }
         }
         return manifest
     }

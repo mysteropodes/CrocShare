@@ -35,13 +35,24 @@ struct Attachment: Codable, Hashable {
     }
 }
 
+/// Une room type Slack (espace de travail) : regroupe des canaux et des membres.
+/// Synchronisée à ses membres via les manifests, comme les canaux.
+struct Room: Codable, Identifiable, Hashable {
+    var id: UUID
+    var name: String
+    var memberIDs: [UUID]
+    var createdBy: UUID
+}
+
 /// Un canal de discussion type Slack : un nom et un sous-groupe de contacts.
+/// Peut appartenir à une room (roomID) ou être indépendant.
 /// La définition du canal est synchronisée à ses membres via les manifests.
 struct Channel: Codable, Identifiable, Hashable {
     var id: UUID
     var name: String
     var memberIDs: [UUID]
     var createdBy: UUID
+    var roomID: UUID? = nil
 }
 
 /// Un message de chat. Les messages voyagent embarqués dans les manifests :
@@ -77,6 +88,8 @@ struct Manifest: Codable {
     var ackIDs: [UUID]? = nil
     /// Canaux dont le destinataire est membre, pour qu'il les voie apparaître.
     var channels: [Channel]? = nil
+    /// Rooms dont le destinataire est membre.
+    var rooms: [Room]? = nil
 }
 
 /// Un téléchargement demandé par l'utilisateur.
