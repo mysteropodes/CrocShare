@@ -34,7 +34,20 @@ contact est hors ligne, ils sont remis automatiquement à sa reconnexion
 notification à l'arrivée, historique persisté dans
 `~/Library/Application Support/CrocShare/chats.json`.
 
-## Prérequis
+## Installation (DMG)
+
+1. Installer croc : `brew install croc`
+2. Ouvrir le DMG et glisser CrocShare dans Applications.
+3. **Important** — l'app n'est pas notariée par Apple : macOS la bloque au
+   premier lancement (« Impossible d'ouvrir l'app »). Pour débloquer :
+
+```sh
+xattr -dr com.apple.quarantine /Applications/CrocShare.app
+```
+
+(une seule fois ; les mises à jour automatiques Sparkle ne reposent pas le problème)
+
+## Prérequis (build depuis les sources)
 
 ```sh
 brew install croc
