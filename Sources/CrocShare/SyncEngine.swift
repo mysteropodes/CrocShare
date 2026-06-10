@@ -207,7 +207,10 @@ final class SyncEngine: ObservableObject {
                 if !paths.isEmpty {
                     let filesCode = Channels.files(secret: contact.secret,
                                                    requestID: request.requestID)
-                    let sent = await CrocService.send(code: filesCode, paths: paths, timeout: 3600)
+                    // stallTimeout : si le demandeur ne se connecte pas (ou décroche),
+                    // on libère la boucle au lieu de rester bloqué 1 h sur une salle morte.
+                    let sent = await CrocService.send(code: filesCode, paths: paths,
+                                                      timeout: 24 * 3600, stallTimeout: 180)
                     store.logSync(contact.name, "envoi fichiers →", sent)
                 }
             }
@@ -268,9 +271,20 @@ final class SyncEngine: ObservableObject {
 
         // Réception dans un dossier temporaire, puis déplacement à l'emplacement
         // exact dans le dossier cloud (croc dépose les fichiers à plat).
+        // Le serveur en face attend sur cette salle : une connexion ratée
+        // (croisement sur le relai public) se rattrape en réessayant la même salle.
         let tmpOut = tempDir("download-\(request.requestID)")
         let filesCode = Channels.files(secret: contact.secret, requestID: request.requestID)
-        let received = await CrocService.receive(code: filesCode, outDir: tmpOut, timeout: 3600)
+        var received = await CrocService.receive(code: filesCode, outDir: tmpOut,
+                                                 timeout: 24 * 3600, stallTimeout: 180)
+        var attempts = 1
+        while !received.ok && !received.timedOut && attempts < 4 && !Task.isCancelled {
+            store.logSync(contact.name, "réception fichier ← (retry \(attempts))", received)
+            try? await Task.sleep(for: .seconds(2))
+            received = await CrocService.receive(code: filesCode, outDir: tmpOut,
+                                                 timeout: 24 * 3600, stallTimeout: 180)
+            attempts += 1
+        }
         store.logSync(contact.name, "réception fichier ←", received)
 
         if received.ok {

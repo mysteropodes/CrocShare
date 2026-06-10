@@ -46,9 +46,18 @@ enum CrocService {
         var collected = Data()
     }
 
+    private final class StallTracker: @unchecked Sendable {
+        var lastCount = 0
+        var lastChange = Date()
+    }
+
     /// Lance croc avec un timeout dur : le process est tué s'il dépasse.
+    /// `stallTimeout` : tue aussi le process si sa sortie n'évolue plus pendant N s
+    /// (un transfert réel imprime sa progression en continu ; le silence prolongé
+    /// signifie qu'on attend un pair qui ne viendra plus — évite les zombies d'1 h).
     /// Le code phrase passe par CROC_SECRET : croc 10.x refuse `--code` en CLI sur Unix.
-    static func run(arguments: [String], secret: String, timeout: TimeInterval) async -> CrocResult {
+    static func run(arguments: [String], secret: String, timeout: TimeInterval,
+                    stallTimeout: TimeInterval? = nil) async -> CrocResult {
         guard let croc = findCroc() else {
             return CrocResult(exitCode: -1, output: "croc introuvable", timedOut: false)
         }
@@ -107,7 +116,7 @@ enum CrocService {
                 return
             }
 
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            let killProcess = {
                 state.lock.lock()
                 let alreadyDone = state.finished
                 if !alreadyDone { state.killedByTimeout = true }
@@ -118,6 +127,30 @@ enum CrocService {
                         if process.isRunning { kill(process.processIdentifier, SIGKILL) }
                     }
                 }
+            }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killProcess)
+
+            if let stall = stallTimeout {
+                // Surveillance du blocage : sortie inchangée pendant `stall` secondes.
+                let timer = DispatchSource.makeTimerSource(queue: .global())
+                timer.schedule(deadline: .now() + 10, repeating: 10)
+                let tracker = StallTracker()
+                timer.setEventHandler {
+                    state.lock.lock()
+                    let count = state.collected.count
+                    let done = state.finished
+                    state.lock.unlock()
+                    if done { timer.cancel(); return }
+                    if count != tracker.lastCount {
+                        tracker.lastCount = count
+                        tracker.lastChange = Date()
+                    } else if Date().timeIntervalSince(tracker.lastChange) > stall {
+                        timer.cancel()
+                        killProcess()
+                    }
+                }
+                timer.resume()
             }
         }
     }
@@ -133,17 +166,21 @@ enum CrocService {
     /// --no-local : sans lui, croc ouvre un relai local sur la machine et le receveur
     /// du même réseau s'y connecte en entrant → bloqué par le pare-feu macOS.
     /// Tout passe par le relai (connexions sortantes des deux côtés) : fiable partout.
-    static func send(code: String, paths: [String], timeout: TimeInterval) async -> CrocResult {
-        await run(arguments: relayArgs + ["send", "--no-local"] + paths, secret: code, timeout: timeout)
+    static func send(code: String, paths: [String], timeout: TimeInterval,
+                     stallTimeout: TimeInterval? = nil) async -> CrocResult {
+        await run(arguments: relayArgs + ["send", "--no-local"] + paths,
+                  secret: code, timeout: timeout, stallTimeout: stallTimeout)
     }
 
     /// Tente de recevoir sur un code ; échoue silencieusement si personne n'envoie.
-    static func receive(code: String, outDir: URL, timeout: TimeInterval) async -> CrocResult {
+    static func receive(code: String, outDir: URL, timeout: TimeInterval,
+                        stallTimeout: TimeInterval? = nil) async -> CrocResult {
         try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
         return await run(
             arguments: relayArgs + ["--yes", "--overwrite", "--out", outDir.path],
             secret: code,
-            timeout: timeout
+            timeout: timeout,
+            stallTimeout: stallTimeout
         )
     }
 }
