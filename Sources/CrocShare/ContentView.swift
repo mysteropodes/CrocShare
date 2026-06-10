@@ -215,14 +215,11 @@ struct ContactDetailView: View {
         store.downloads.filter { $0.contactID == contact.id }.sorted { $0.createdAt > $1.createdAt }
     }
 
-    /// Fichiers groupés par dossier, pour permettre le téléchargement d'un dossier entier.
-    var folders: [(folder: String, files: [RemoteFile])] {
+    /// Arborescence du dossier partagé du contact (dossiers dépliables).
+    var fileTree: [FileNode] {
         guard let manifest else { return [] }
-        return Dictionary(grouping: manifest.files) {
-            ($0.path as NSString).deletingLastPathComponent
-        }
-        .map { (folder: $0.key, files: $0.value.sorted { $0.path < $1.path }) }
-        .sorted { $0.folder < $1.folder }
+        let entries = manifest.files.map { (components: $0.path.split(separator: "/").map(String.init), file: $0) }
+        return FileNode.build(entries: entries, prefix: "")
     }
 
     var body: some View {
@@ -271,25 +268,24 @@ struct ContactDetailView: View {
                         .font(.caption)
                     }
                 }
-                ForEach(folders, id: \.folder) { group in
-                    Section {
-                        ForEach(group.files) { file in
-                            RemoteFileRow(file: file, contact: contact)
-                        }
-                    } header: {
+                OutlineGroup(fileTree, children: \.children) { node in
+                    if let file = node.file {
+                        RemoteFileRow(file: file, contact: contact)
+                    } else {
                         HStack {
-                            Label(group.folder.isEmpty ? "Racine" : group.folder,
-                                  systemImage: "folder")
+                            Label(node.name, systemImage: "folder.fill")
+                            Text("\(node.allFiles.count)")
+                                .font(.caption2).foregroundStyle(.secondary)
                             Spacer()
                             Button {
-                                for file in group.files {
+                                for file in node.allFiles {
                                     store.enqueueDownload(file: file, contact: contact)
                                 }
                             } label: {
-                                Label("Télécharger le dossier", systemImage: "arrow.down.circle")
-                                    .font(.caption)
+                                Image(systemName: "arrow.down.circle")
                             }
                             .buttonStyle(.plain)
+                            .help("Télécharger tout le dossier « \(node.name) »")
                         }
                     }
                 }
@@ -659,6 +655,7 @@ struct ChatTranscript: View {
 }
 
 struct ChatBubble: View {
+    @EnvironmentObject var store: AppStore
     let message: ChatMessage
     let isMine: Bool
     let showSender: Bool
@@ -706,6 +703,14 @@ struct ChatBubble: View {
                 .font(.caption2).foregroundStyle(.secondary)
             }
             if !isMine { Spacer(minLength: 60) }
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                store.deleteMessage(message)
+            } label: {
+                Label(isMine ? "Supprimer pour tout le monde" : "Supprimer pour moi",
+                      systemImage: "trash")
+            }
         }
     }
 }
@@ -914,6 +919,40 @@ enum FieldEditor {
     }
 }
 
+/// Nœud de l'arborescence des fichiers partagés (dossier ou fichier).
+struct FileNode: Identifiable {
+    let id: String
+    let name: String
+    var children: [FileNode]?
+    var file: RemoteFile?
+
+    var allFiles: [RemoteFile] {
+        if let file { return [file] }
+        return (children ?? []).flatMap(\.allFiles)
+    }
+
+    static func build(entries: [(components: [String], file: RemoteFile)],
+                      prefix: String) -> [FileNode] {
+        var folders: [String: [(components: [String], file: RemoteFile)]] = [:]
+        var leaves: [FileNode] = []
+        for entry in entries {
+            if entry.components.count == 1 {
+                leaves.append(FileNode(id: prefix + entry.components[0],
+                                       name: entry.components[0],
+                                       children: nil, file: entry.file))
+            } else if let first = entry.components.first {
+                folders[first, default: []].append((Array(entry.components.dropFirst()), entry.file))
+            }
+        }
+        let folderNodes = folders.map { name, sub in
+            FileNode(id: prefix + name + "/", name: name,
+                     children: build(entries: sub, prefix: prefix + name + "/"), file: nil)
+        }
+        return folderNodes.sorted { $0.name < $1.name }
+            + leaves.sorted { $0.name < $1.name }
+    }
+}
+
 struct RemoteFileRow: View {
     @EnvironmentObject var store: AppStore
     let file: RemoteFile
@@ -930,7 +969,7 @@ struct RemoteFileRow: View {
         HStack {
             Image(systemName: "doc")
             VStack(alignment: .leading) {
-                Text(file.path)
+                Text(file.name)
                 Text("\(formatBytes(file.size)) — modifié le \(file.mtime.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption).foregroundStyle(.secondary)
             }

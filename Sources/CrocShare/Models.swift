@@ -59,6 +59,13 @@ struct ChatMessage: Codable, Identifiable, Hashable {
     var attachment: Attachment? = nil
 }
 
+/// Payload du canal chat dédié (réactif) : messages en attente + suppressions.
+/// La réception réussie via croc vaut accusé de livraison.
+struct ChatPayload: Codable {
+    var messages: [ChatMessage] = []
+    var deleteIDs: [UUID] = []
+}
+
 /// La liste des fichiers que quelqu'un partage, échangée périodiquement via croc.
 /// Transporte aussi les messages de chat en attente et les accusés de réception.
 struct Manifest: Codable {

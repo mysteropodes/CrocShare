@@ -26,6 +26,11 @@ enum Channels {
         code(secret: secret, label: "request:\(from.uuidString):\(to.uuidString)")
     }
 
+    /// Canal chat dédié (réactif) : `from` envoie ses messages à `to`.
+    static func chat(secret: String, from: UUID, to: UUID) -> String {
+        code(secret: secret, label: "chat:\(from.uuidString):\(to.uuidString)")
+    }
+
     /// Canal éphémère de livraison des fichiers pour une requête donnée.
     static func files(secret: String, requestID: String) -> String {
         code(secret: secret, label: "files:\(requestID)")

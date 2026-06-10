@@ -40,6 +40,8 @@ final class SyncEngine: ObservableObject {
             spawn("poll-\(contact.id)") { [weak self] in await self?.pollLoop(contact) }
             spawn("serve-\(contact.id)") { [weak self] in await self?.serveLoop(contact) }
             spawn("queue-\(contact.id)") { [weak self] in await self?.queueLoop(contact) }
+            spawn("chat-out-\(contact.id)") { [weak self] in await self?.chatOfferLoop(contact) }
+            spawn("chat-in-\(contact.id)") { [weak self] in await self?.chatPollLoop(contact) }
         }
     }
 
@@ -121,6 +123,64 @@ final class SyncEngine: ObservableObject {
                 }
             }
             try? await Task.sleep(for: .seconds(5))
+        }
+    }
+
+    // MARK: - 2 bis. Chat réactif (canal dédié)
+
+    /// Envoie immédiatement les messages en attente et les suppressions :
+    /// latence de quelques secondes quand les deux sont en ligne, au lieu
+    /// du cycle complet des listes. Le succès croc vaut accusé de livraison.
+    private func chatOfferLoop(_ contact: Contact) async {
+        let code = Channels.chat(secret: contact.secret,
+                                 from: store.config.myID, to: contact.id)
+        while !Task.isCancelled {
+            guard store.crocPath != nil else {
+                try? await Task.sleep(for: .seconds(10)); continue
+            }
+            let payload = ChatPayload(
+                messages: store.outbox(for: contact),
+                deleteIDs: store.pendingDeletes[contact.id] ?? []
+            )
+            guard !payload.messages.isEmpty || !payload.deleteIDs.isEmpty else {
+                try? await Task.sleep(for: .seconds(2)); continue
+            }
+            let dir = tempDir("chat-out-\(contact.id)")
+            let file = dir.appendingPathComponent("crocshare-chat.json")
+            if let data = try? JSONEncoder().encode(payload) {
+                try? data.write(to: file)
+                let result = await CrocService.send(code: code, paths: [file.path], timeout: 30)
+                store.logSync(contact.name, "envoi chat →", result)
+                if result.ok {
+                    store.markDelivered(payload.messages.map(\.id), for: contact)
+                    store.clearPendingDeletes(payload.deleteIDs, for: contact)
+                    store.markSeen(contact.id)
+                }
+            }
+            try? await Task.sleep(for: .seconds(2))
+        }
+    }
+
+    private func chatPollLoop(_ contact: Contact) async {
+        let code = Channels.chat(secret: contact.secret,
+                                 from: contact.id, to: store.config.myID)
+        while !Task.isCancelled {
+            guard store.crocPath != nil else {
+                try? await Task.sleep(for: .seconds(10)); continue
+            }
+            let dir = tempDir("chat-in-\(contact.id)")
+            let result = await CrocService.receive(code: code, outDir: dir, timeout: 30)
+            if result.ok {
+                let file = dir.appendingPathComponent("crocshare-chat.json")
+                if let data = try? Data(contentsOf: file),
+                   let payload = try? JSONDecoder().decode(ChatPayload.self, from: data) {
+                    store.ingestMessages(payload.messages, from: contact)
+                    store.applyRemoteDeletes(payload.deleteIDs, from: contact)
+                    store.markSeen(contact.id)
+                }
+                try? FileManager.default.removeItem(at: file)
+            }
+            try? await Task.sleep(for: .seconds(1))
         }
     }
 

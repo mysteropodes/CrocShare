@@ -10,6 +10,8 @@ final class AppStore: ObservableObject {
     @Published var manifests: [UUID: Manifest] = [:] { didSet { saveManifests() } }
     @Published var chats: [UUID: [ChatMessage]] = [:] { didSet { saveChats() } }
     @Published var channels: [Channel] = [] { didSet { saveChannels() } }
+    /// Suppressions de messages à propager (contactID → ids des messages supprimés).
+    @Published var pendingDeletes: [UUID: [UUID]] = [:] { didSet { saveDeletes() } }
     @Published var lastSeen: [UUID: Date] = [:]
     /// Date de dernière lecture par conversation (id de contact ou de canal).
     @Published var lastRead: [UUID: Date] = [:] { didSet { saveLastRead() } }
@@ -63,6 +65,7 @@ final class AppStore: ObservableObject {
     private var chatsURL: URL { Self.supportDir.appendingPathComponent("chats.json") }
     private var channelsURL: URL { Self.supportDir.appendingPathComponent("channels.json") }
     private var lastReadURL: URL { Self.supportDir.appendingPathComponent("lastread.json") }
+    private var deletesURL: URL { Self.supportDir.appendingPathComponent("deletes.json") }
 
     init() {
         let dec = JSONDecoder()
@@ -107,6 +110,12 @@ final class AppStore: ObservableObject {
         if let data = try? Data(contentsOf: lastReadURL),
            let map = try? dec.decode([String: Date].self, from: data) {
             lastRead = Dictionary(uniqueKeysWithValues: map.compactMap { key, value in
+                UUID(uuidString: key).map { ($0, value) }
+            })
+        }
+        if let data = try? Data(contentsOf: deletesURL),
+           let map = try? dec.decode([String: [UUID]].self, from: data) {
+            pendingDeletes = Dictionary(uniqueKeysWithValues: map.compactMap { key, value in
                 UUID(uuidString: key).map { ($0, value) }
             })
         }
@@ -160,6 +169,10 @@ final class AppStore: ObservableObject {
     private func saveLastRead() {
         save(Dictionary(uniqueKeysWithValues: lastRead.map { ($0.key.uuidString, $0.value) }),
              to: lastReadURL)
+    }
+    private func saveDeletes() {
+        save(Dictionary(uniqueKeysWithValues: pendingDeletes.map { ($0.key.uuidString, $0.value) }),
+             to: deletesURL)
     }
 
     // MARK: - Non-lus
@@ -459,6 +472,45 @@ final class AppStore: ObservableObject {
     /// Mes messages pas encore confirmés par ce contact : embarqués dans chaque manifest.
     func outbox(for contact: Contact) -> [ChatMessage] {
         (chats[contact.id] ?? []).filter { $0.fromID == config.myID && !$0.delivered }
+    }
+
+    /// Marque mes messages comme livrés (le transfert croc a réussi = reçus en face).
+    func markDelivered(_ ids: [UUID], for contact: Contact) {
+        guard var thread = chats[contact.id] else { return }
+        let idSet = Set(ids)
+        var changed = false
+        for i in thread.indices where idSet.contains(thread[i].id) && !thread[i].delivered {
+            thread[i].delivered = true
+            changed = true
+        }
+        if changed { chats[contact.id] = thread }
+    }
+
+    /// Supprime un message : localement partout, et chez les destinataires si c'est le mien.
+    func deleteMessage(_ message: ChatMessage) {
+        for (contactID, thread) in chats where thread.contains(where: { $0.id == message.id }) {
+            chats[contactID] = thread.filter { $0.id != message.id }
+            // Propager la suppression seulement pour mes propres messages.
+            if message.fromID == config.myID {
+                pendingDeletes[contactID, default: []].append(message.id)
+            }
+        }
+    }
+
+    /// Applique les suppressions demandées par le contact (ses propres messages).
+    func applyRemoteDeletes(_ ids: [UUID], from contact: Contact) {
+        guard var thread = chats[contact.id], !ids.isEmpty else { return }
+        let idSet = Set(ids)
+        let before = thread.count
+        thread.removeAll { idSet.contains($0.id) && $0.fromID == contact.id }
+        if thread.count != before { chats[contact.id] = thread }
+    }
+
+    func clearPendingDeletes(_ ids: [UUID], for contact: Contact) {
+        guard var pending = pendingDeletes[contact.id] else { return }
+        let idSet = Set(ids)
+        pending.removeAll { idSet.contains($0) }
+        pendingDeletes[contact.id] = pending.isEmpty ? nil : pending
     }
 
     /// Ids des derniers messages reçus de ce contact, renvoyés comme accusés.
