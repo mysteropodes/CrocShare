@@ -29,6 +29,26 @@ final class AppStore: ObservableObject {
     }
     @Published var crocPath: String? = CrocService.findCroc()
 
+    /// Journal de synchronisation : chaque opération croc avec son résultat,
+    /// pour diagnostiquer les problèmes de connexion entre machines.
+    struct SyncLogEntry: Identifiable {
+        let id = UUID()
+        let date: Date
+        let contact: String
+        let channel: String
+        let ok: Bool
+        let detail: String
+    }
+    @Published var syncLog: [SyncLogEntry] = []
+
+    func logSync(_ contactName: String, _ channel: String, _ result: CrocResult) {
+        syncLog.append(SyncLogEntry(
+            date: Date(), contact: contactName, channel: channel, ok: result.ok,
+            detail: result.timedOut ? "timeout (personne en face)" : result.lastLine
+        ))
+        if syncLog.count > 300 { syncLog.removeFirst(syncLog.count - 300) }
+    }
+
     static let supportDir: URL = {
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("CrocShare")
@@ -473,7 +493,17 @@ final class AppStore: ObservableObject {
                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
                options: [.skipsHiddenFiles]
            ) {
+            // Si le dossier de téléchargement est à l'intérieur du dossier partagé,
+            // l'exclure : sinon tout ce qu'on reçoit est re-partagé en boucle.
+            let mirrorPath = mirrorRootURL.standardizedFileURL.path
             for case let url as URL in enumerator {
+                let path = url.standardizedFileURL.path
+                if path == mirrorPath || path.hasPrefix(mirrorPath + "/") {
+                    enumerator.skipDescendants()
+                    continue
+                }
+                // Jamais partager les fichiers d'attente cloud.
+                guard url.pathExtension != PlaceholderManager.fileExtension else { continue }
                 guard let values = try? url.resourceValues(
                     forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
                 ), values.isRegularFile == true else { continue }

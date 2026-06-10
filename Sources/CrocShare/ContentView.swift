@@ -536,6 +536,53 @@ struct ChannelMembersSheet: View {
     }
 }
 
+/// Journal des opérations croc, pour diagnostiquer les soucis de connexion.
+struct SyncLogSheet: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Journal de synchronisation").font(.title3.bold())
+                Spacer()
+                Button("Copier") {
+                    let text = store.syncLog.map {
+                        "\($0.date.formatted(date: .omitted, time: .standard)) [\($0.contact)] \($0.channel) \($0.ok ? "OK" : "ÉCHEC") \($0.detail)"
+                    }.joined(separator: "\n")
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
+                Button("Fermer") { dismiss() }
+            }
+            if store.syncLog.isEmpty {
+                Text("Aucune opération enregistrée pour le moment.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 200)
+            } else {
+                List(store.syncLog.reversed()) { entry in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: entry.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(entry.ok ? .green : .orange)
+                        Text(entry.date.formatted(date: .omitted, time: .standard))
+                            .font(.system(.caption, design: .monospaced))
+                        Text("[\(entry.contact)]").font(.caption.bold())
+                        Text(entry.channel).font(.caption)
+                        Text(entry.detail).font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                .frame(minHeight: 320)
+            }
+            Text("« timeout (personne en face) » est normal quand le contact est hors ligne. Toute autre erreur répétée indique un problème réseau ou de relai.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .frame(width: 640, height: 460)
+    }
+}
+
 // MARK: - Drag & drop de fichiers dans le chat
 
 extension View {
@@ -1028,6 +1075,7 @@ struct SettingsSheet: View {
     @EnvironmentObject var store: AppStore
     @ObservedObject var relay = RelayServer.shared
     @Environment(\.dismiss) var dismiss
+    @State private var showLog = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1119,10 +1167,13 @@ struct SettingsSheet: View {
             Divider()
 
             LabeledContent("Debug") {
-                if store.hasDebugContact {
-                    Button("Retirer le contact fictif") { store.removeDebugContact() }
-                } else {
-                    Button("Ajouter un contact fictif") { store.addDebugContact() }
+                HStack {
+                    Button("Journal de synchronisation…") { showLog = true }
+                    if store.hasDebugContact {
+                        Button("Retirer le contact fictif") { store.removeDebugContact() }
+                    } else {
+                        Button("Ajouter un contact fictif") { store.addDebugContact() }
+                    }
                 }
             }
             Text("Contact « Démo » simulé localement : toujours en ligne, répond aux messages, fichiers téléchargeables (générés sur place). Aucun transfert croc réel.")
@@ -1135,6 +1186,7 @@ struct SettingsSheet: View {
         }
         .padding(28)
         .frame(width: 520)
+        .sheet(isPresented: $showLog) { SyncLogSheet() }
     }
 
     private func pickFolder() -> URL? {

@@ -75,7 +75,8 @@ final class SyncEngine: ObservableObject {
             let file = dir.appendingPathComponent("crocshare-manifest.json")
             if let data = try? JSONEncoder().encode(manifest) {
                 try? data.write(to: file)
-                _ = await CrocService.send(code: code, paths: [file.path], timeout: 45)
+                let result = await CrocService.send(code: code, paths: [file.path], timeout: 45)
+                store.logSync(contact.name, "envoi liste →", result)
             }
             try? await Task.sleep(for: .seconds(3))
         }
@@ -92,6 +93,7 @@ final class SyncEngine: ObservableObject {
             }
             let dir = tempDir("manifest-in-\(contact.id)")
             let result = await CrocService.receive(code: code, outDir: dir, timeout: 35)
+            store.logSync(contact.name, "réception liste ←", result)
             if result.ok {
                 let file = dir.appendingPathComponent("crocshare-manifest.json")
                 if let data = try? Data(contentsOf: file),
@@ -145,7 +147,8 @@ final class SyncEngine: ObservableObject {
                 if !paths.isEmpty {
                     let filesCode = Channels.files(secret: contact.secret,
                                                    requestID: request.requestID)
-                    _ = await CrocService.send(code: filesCode, paths: paths, timeout: 3600)
+                    let sent = await CrocService.send(code: filesCode, paths: paths, timeout: 3600)
+                    store.logSync(contact.name, "envoi fichiers →", sent)
                 }
             }
             try? await Task.sleep(for: .seconds(2))
@@ -195,6 +198,7 @@ final class SyncEngine: ObservableObject {
         let reqCode = Channels.request(secret: contact.secret,
                                        from: store.config.myID, to: contact.id)
         let sent = await CrocService.send(code: reqCode, paths: [reqFile.path], timeout: 40)
+        store.logSync(contact.name, "demande fichier →", sent)
         try? FileManager.default.removeItem(at: reqFile)
         guard sent.ok else {
             // Le contact n'a pas pris la requête : on repasse en attente, on réessaiera.
@@ -207,6 +211,7 @@ final class SyncEngine: ObservableObject {
         let tmpOut = tempDir("download-\(request.requestID)")
         let filesCode = Channels.files(secret: contact.secret, requestID: request.requestID)
         let received = await CrocService.receive(code: filesCode, outDir: tmpOut, timeout: 3600)
+        store.logSync(contact.name, "réception fichier ←", received)
 
         if received.ok {
             let fm = FileManager.default
