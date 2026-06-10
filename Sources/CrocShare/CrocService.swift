@@ -59,6 +59,10 @@ enum CrocService {
             var env = ProcessInfo.processInfo.environment
             env["CROC_NO_CHECK_UPDATE"] = "1"
             env["CROC_SECRET"] = secret
+            // croc copie son code dans le presse-papiers à chaque envoi (via pbcopy),
+            // écrasant celui de l'utilisateur toutes les ~45 s. PATH vide = pbcopy
+            // introuvable = presse-papiers préservé, sans effet sur les transferts.
+            env["PATH"] = "/var/empty"
             process.environment = env
 
             let pipe = Pipe()
