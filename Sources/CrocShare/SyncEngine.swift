@@ -134,6 +134,9 @@ final class SyncEngine: ObservableObject {
     private func chatOfferLoop(_ contact: Contact) async {
         let code = Channels.chat(secret: contact.secret,
                                  from: store.config.myID, to: contact.id)
+        // Backoff après échec : marteler une salle relai toutes les 2 s laisse
+        // des connexions à moitié mortes qui font échouer les tentatives suivantes.
+        var backoff: Double = 2
         while !Task.isCancelled {
             guard store.crocPath != nil else {
                 try? await Task.sleep(for: .seconds(10)); continue
@@ -143,6 +146,7 @@ final class SyncEngine: ObservableObject {
                 deleteIDs: store.pendingDeletes[contact.id] ?? []
             )
             guard !payload.messages.isEmpty || !payload.deleteIDs.isEmpty else {
+                backoff = 2
                 try? await Task.sleep(for: .seconds(2)); continue
             }
             let dir = tempDir("chat-out-\(contact.id)")
@@ -155,9 +159,12 @@ final class SyncEngine: ObservableObject {
                     store.markDelivered(payload.messages.map(\.id), for: contact)
                     store.clearPendingDeletes(payload.deleteIDs, for: contact)
                     store.markSeen(contact.id)
+                    backoff = 2
+                } else {
+                    backoff = min(backoff * 2, 30)
                 }
             }
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(backoff))
         }
     }
 
@@ -180,7 +187,7 @@ final class SyncEngine: ObservableObject {
                 }
                 try? FileManager.default.removeItem(at: file)
             }
-            try? await Task.sleep(for: .seconds(1))
+            try? await Task.sleep(for: .seconds(3))
         }
     }
 
@@ -234,58 +241,63 @@ final class SyncEngine: ObservableObject {
     // MARK: - 4. File d'attente de nos téléchargements
 
     private func queueLoop(_ contact: Contact) async {
+        var backoff: Double = 5
         while !Task.isCancelled {
             let waiting = store.downloads.filter {
                 $0.contactID == contact.id && $0.status == .waiting
             }
             if !waiting.isEmpty, store.isOnline(contact), store.crocPath != nil {
+                var anySuccess = false
                 for item in waiting where !Task.isCancelled {
                     await download(item, from: contact)
+                    if store.downloads.first(where: { $0.id == item.id })?.status == .done {
+                        anySuccess = true
+                    }
                 }
+                // Échec complet : on espace les tentatives pour laisser le relai respirer.
+                backoff = anySuccess ? 5 : min(backoff * 2, 60)
+            } else {
+                backoff = 5
             }
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: .seconds(backoff))
         }
     }
 
     private func download(_ item: PendingDownload, from contact: Contact) async {
         store.setDownloadStatus(item.id, .transferring)
 
-        let request = FileRequest(requestID: UUID().uuidString, paths: [item.filePath])
-        let dir = tempDir("request-out-\(contact.id)")
-        let reqFile = dir.appendingPathComponent("crocshare-request-\(request.requestID).json")
-        guard let data = try? JSONEncoder().encode(request) else {
-            store.setDownloadStatus(item.id, .failed); return
-        }
-        try? data.write(to: reqFile)
+        // Cycle complet demande → réception, réessayé en entier : après un
+        // échec de connexion, l'envoyeur en face est mort, il faut re-demander.
+        var received = CrocResult(exitCode: -1, output: "", timedOut: false)
+        var tmpOut = FileManager.default.temporaryDirectory
+        var requestID = ""
 
-        let reqCode = Channels.request(secret: contact.secret,
-                                       from: store.config.myID, to: contact.id)
-        let sent = await CrocService.send(code: reqCode, paths: [reqFile.path], timeout: 40)
-        store.logSync(contact.name, "demande fichier →", sent)
-        try? FileManager.default.removeItem(at: reqFile)
-        guard sent.ok else {
-            // Le contact n'a pas pris la requête : on repasse en attente, on réessaiera.
-            store.setDownloadStatus(item.id, .waiting)
-            return
-        }
+        for attempt in 1...3 where !Task.isCancelled && !received.ok {
+            if attempt > 1 { try? await Task.sleep(for: .seconds(Double(attempt) * 3)) }
 
-        // Réception dans un dossier temporaire, puis déplacement à l'emplacement
-        // exact dans le dossier cloud (croc dépose les fichiers à plat).
-        // Le serveur en face attend sur cette salle : une connexion ratée
-        // (croisement sur le relai public) se rattrape en réessayant la même salle.
-        let tmpOut = tempDir("download-\(request.requestID)")
-        let filesCode = Channels.files(secret: contact.secret, requestID: request.requestID)
-        var received = await CrocService.receive(code: filesCode, outDir: tmpOut,
+            let request = FileRequest(requestID: UUID().uuidString, paths: [item.filePath])
+            requestID = request.requestID
+            let dir = tempDir("request-out-\(contact.id)")
+            let reqFile = dir.appendingPathComponent("crocshare-request-\(requestID).json")
+            guard let data = try? JSONEncoder().encode(request) else { break }
+            try? data.write(to: reqFile)
+
+            let reqCode = Channels.request(secret: contact.secret,
+                                           from: store.config.myID, to: contact.id)
+            let sent = await CrocService.send(code: reqCode, paths: [reqFile.path], timeout: 40)
+            store.logSync(contact.name, "demande fichier → (essai \(attempt))", sent)
+            try? FileManager.default.removeItem(at: reqFile)
+            guard sent.ok else { continue }
+
+            // Réception dans un dossier temporaire, puis déplacement à l'emplacement
+            // exact dans le dossier cloud (croc dépose les fichiers à plat).
+            tmpOut = tempDir("download-\(requestID)")
+            received = await CrocService.receive(code: Channels.files(secret: contact.secret,
+                                                                      requestID: requestID),
+                                                 outDir: tmpOut,
                                                  timeout: 24 * 3600, stallTimeout: 180)
-        var attempts = 1
-        while !received.ok && !received.timedOut && attempts < 4 && !Task.isCancelled {
-            store.logSync(contact.name, "réception fichier ← (retry \(attempts))", received)
-            try? await Task.sleep(for: .seconds(2))
-            received = await CrocService.receive(code: filesCode, outDir: tmpOut,
-                                                 timeout: 24 * 3600, stallTimeout: 180)
-            attempts += 1
+            store.logSync(contact.name, "réception fichier ← (essai \(attempt))", received)
         }
-        store.logSync(contact.name, "réception fichier ←", received)
 
         if received.ok {
             let fm = FileManager.default

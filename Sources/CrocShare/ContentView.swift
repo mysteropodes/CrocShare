@@ -542,6 +542,7 @@ struct SyncLogSheet: View {
             HStack {
                 Text("Journal de synchronisation").font(.title3.bold())
                 Spacer()
+                Button("Effacer") { store.syncLog.removeAll() }
                 Button("Copier") {
                     let text = store.syncLog.map {
                         "\($0.date.formatted(date: .omitted, time: .standard)) [\($0.contact)] \($0.channel) \($0.ok ? "OK" : "ÉCHEC") \($0.detail)"
