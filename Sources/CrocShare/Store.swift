@@ -300,10 +300,12 @@ final class AppStore: ObservableObject {
 
     // MARK: - Présence
 
-    /// Un contact est "en ligne" si on a reçu son manifest récemment.
+    /// Un contact est "en ligne" si on a reçu de ses nouvelles récemment
+    /// (liste, chat ou fichier). Fenêtre large : les cycles sont plus lents
+    /// depuis que les récepteurs patientent longtemps sur le relai.
     func isOnline(_ contact: Contact) -> Bool {
         guard let seen = lastSeen[contact.id] else { return false }
-        return Date().timeIntervalSince(seen) < 120
+        return Date().timeIntervalSince(seen) < 300
     }
 
     func markSeen(_ contactID: UUID) {

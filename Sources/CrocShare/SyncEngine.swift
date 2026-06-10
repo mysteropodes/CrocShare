@@ -93,8 +93,11 @@ final class SyncEngine: ObservableObject {
             guard store.crocPath != nil else {
                 try? await Task.sleep(for: .seconds(10)); continue
             }
+            // Timeout long : tuer/relancer un récepteur laisse un fantôme dans la
+            // salle relai qui fait échouer l'émetteur suivant. Moins de kills,
+            // moins de fantômes — un récepteur qui attend ne coûte rien.
             let dir = tempDir("manifest-in-\(contact.id)")
-            let result = await CrocService.receive(code: code, outDir: dir, timeout: 35)
+            let result = await CrocService.receive(code: code, outDir: dir, timeout: 120)
             store.logSync(contact.name, "réception liste ←", result)
             if result.ok {
                 let file = dir.appendingPathComponent("crocshare-manifest.json")
@@ -176,7 +179,7 @@ final class SyncEngine: ObservableObject {
                 try? await Task.sleep(for: .seconds(10)); continue
             }
             let dir = tempDir("chat-in-\(contact.id)")
-            let result = await CrocService.receive(code: code, outDir: dir, timeout: 30)
+            let result = await CrocService.receive(code: code, outDir: dir, timeout: 180)
             if result.ok {
                 let file = dir.appendingPathComponent("crocshare-chat.json")
                 if let data = try? Data(contentsOf: file),
@@ -201,7 +204,7 @@ final class SyncEngine: ObservableObject {
                 try? await Task.sleep(for: .seconds(10)); continue
             }
             let dir = tempDir("request-in-\(contact.id)")
-            let result = await CrocService.receive(code: code, outDir: dir, timeout: 35)
+            let result = await CrocService.receive(code: code, outDir: dir, timeout: 300)
             if result.ok, let request = readRequest(in: dir) {
                 // Résolution sécurisée : on refuse tout chemin sortant du dossier partagé.
                 let paths = request.paths.compactMap { rel -> String? in
