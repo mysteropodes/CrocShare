@@ -71,6 +71,8 @@ struct ChatMessage: Codable, Identifiable, Hashable {
     /// nil = message direct ; sinon, id du canal.
     var channelID: UUID? = nil
     var attachment: Attachment? = nil
+    /// Réponse en fil (thread) : id du message parent. nil = message racine.
+    var replyTo: UUID? = nil
 }
 
 /// Payload du canal chat dédié (réactif) : messages en attente + suppressions.

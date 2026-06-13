@@ -394,19 +394,20 @@ final class AppStore: ObservableObject {
 
     // MARK: - Chat
 
-    func sendMessage(_ text: String, attachment: Attachment? = nil, to contact: Contact) {
+    func sendMessage(_ text: String, attachment: Attachment? = nil, to contact: Contact,
+                     replyTo: UUID? = nil) {
         let msg = ChatMessage(id: UUID(), fromID: config.myID, fromName: config.myName,
                               text: text, date: Date(), delivered: false,
-                              channelID: nil, attachment: attachment)
+                              channelID: nil, attachment: attachment, replyTo: replyTo)
         chats[contact.id, default: []].append(msg)
     }
 
     /// Message de groupe : une seule identité de message, déposée dans chaque
     /// conversation (la vue groupe dédoublonne par id).
-    func broadcast(_ text: String, attachment: Attachment? = nil) {
+    func broadcast(_ text: String, attachment: Attachment? = nil, replyTo: UUID? = nil) {
         let msg = ChatMessage(id: UUID(), fromID: config.myID, fromName: config.myName,
                               text: text, date: Date(), delivered: false,
-                              channelID: nil, attachment: attachment)
+                              channelID: nil, attachment: attachment, replyTo: replyTo)
         for contact in contacts {
             chats[contact.id, default: []].append(msg)
         }
@@ -414,10 +415,11 @@ final class AppStore: ObservableObject {
 
     /// Message de canal : déposé dans la conversation de chaque membre,
     /// avec le même id (la vue canal dédoublonne).
-    func sendChannelMessage(_ text: String, attachment: Attachment? = nil, in channel: Channel) {
+    func sendChannelMessage(_ text: String, attachment: Attachment? = nil, in channel: Channel,
+                            replyTo: UUID? = nil) {
         let msg = ChatMessage(id: UUID(), fromID: config.myID, fromName: config.myName,
                               text: text, date: Date(), delivered: false,
-                              channelID: channel.id, attachment: attachment)
+                              channelID: channel.id, attachment: attachment, replyTo: replyTo)
         for contact in contacts where channel.memberIDs.contains(contact.id) {
             chats[contact.id, default: []].append(msg)
         }
