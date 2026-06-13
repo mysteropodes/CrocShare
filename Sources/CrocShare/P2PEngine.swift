@@ -71,8 +71,8 @@ final class P2PEngine: ObservableObject {
 
     private func consumeEvents(of bridge: CoreBridge) {
         eventTask = Task { [weak self] in
-            for await event in await bridge.events {
-                await self?.handle(event)
+            for await event in bridge.events {
+                self?.handle(event)
             }
         }
     }
