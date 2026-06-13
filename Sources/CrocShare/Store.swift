@@ -11,6 +11,8 @@ final class AppStore: ObservableObject {
     @Published var chats: [UUID: [ChatMessage]] = [:] { didSet { saveChats() } }
     @Published var channels: [Channel] = [] { didSet { saveChannels() } }
     @Published var rooms: [Room] = [] { didSet { saveRooms() } }
+    @Published var pendingInvites: [PendingInvite] = [] { didSet { saveInvites() } }
+    @Published var pendingInviteAcks: [PendingInviteAck] = [] { didSet { saveInviteAcks() } }
     /// Suppressions de messages à propager (contactID → ids des messages supprimés).
     @Published var pendingDeletes: [UUID: [UUID]] = [:] { didSet { saveDeletes() } }
     @Published var lastSeen: [UUID: Date] = [:]
@@ -68,6 +70,8 @@ final class AppStore: ObservableObject {
     private var lastReadURL: URL { Self.supportDir.appendingPathComponent("lastread.json") }
     private var deletesURL: URL { Self.supportDir.appendingPathComponent("deletes.json") }
     private var roomsURL: URL { Self.supportDir.appendingPathComponent("rooms.json") }
+    private var invitesURL: URL { Self.supportDir.appendingPathComponent("invites.json") }
+    private var inviteAcksURL: URL { Self.supportDir.appendingPathComponent("inviteacks.json") }
 
     init() {
         let dec = JSONDecoder()
@@ -112,6 +116,14 @@ final class AppStore: ObservableObject {
         if let data = try? Data(contentsOf: roomsURL),
            let list = try? dec.decode([Room].self, from: data) {
             rooms = list
+        }
+        if let data = try? Data(contentsOf: invitesURL),
+           let list = try? dec.decode([PendingInvite].self, from: data) {
+            pendingInvites = list
+        }
+        if let data = try? Data(contentsOf: inviteAcksURL),
+           let list = try? dec.decode([PendingInviteAck].self, from: data) {
+            pendingInviteAcks = list
         }
         if let data = try? Data(contentsOf: lastReadURL),
            let map = try? dec.decode([String: Date].self, from: data) {
@@ -173,6 +185,44 @@ final class AppStore: ObservableObject {
     }
     private func saveChannels() { save(channels, to: channelsURL) }
     private func saveRooms() { save(rooms, to: roomsURL) }
+    private func saveInvites() { save(pendingInvites, to: invitesURL) }
+    private func saveInviteAcks() { save(pendingInviteAcks, to: inviteAcksURL) }
+
+    // MARK: - Invitations asynchrones (fichier .crocinvite)
+
+    /// Crée une invitation : le fichier part par mail/message, l'appairage se
+    /// complétera tout seul quand l'invité l'aura importée et que les deux
+    /// machines seront en ligne en même temps.
+    func makeInvite() -> InviteFile {
+        let invite = PendingInvite(id: UUID(), secret: Channels.newSecret(), createdAt: Date())
+        pendingInvites.append(invite)
+        return InviteFile(inviteID: invite.id, secret: invite.secret,
+                          hostID: config.myID, hostName: config.myName)
+    }
+
+    func importInvite(_ file: InviteFile) {
+        guard file.hostID != config.myID else {
+            Notifier.notify(title: "Invitation ignorée", body: "C'est ta propre invitation 😄")
+            return
+        }
+        guard !contacts.contains(where: { $0.id == file.hostID }) else {
+            Notifier.notify(title: "Déjà contact", body: "\(file.hostName) est déjà dans tes contacts.")
+            return
+        }
+        contacts.append(Contact(id: file.hostID, name: file.hostName, secret: file.secret))
+        pendingInviteAcks.append(PendingInviteAck(id: file.inviteID, secret: file.secret))
+        Notifier.notify(title: "Invitation importée",
+                        body: "\(file.hostName) ajouté — la connexion s'établira automatiquement.")
+    }
+
+    func completeInvite(_ invite: PendingInvite, payload: PairingPayload) {
+        if !contacts.contains(where: { $0.id == payload.id }) {
+            contacts.append(Contact(id: payload.id, name: payload.name, secret: invite.secret))
+        }
+        pendingInvites.removeAll { $0.id == invite.id }
+        Notifier.notify(title: "Invitation acceptée",
+                        body: "\(payload.name) est maintenant dans tes contacts !")
+    }
     private func saveLastRead() {
         save(Dictionary(uniqueKeysWithValues: lastRead.map { ($0.key.uuidString, $0.value) }),
              to: lastReadURL)

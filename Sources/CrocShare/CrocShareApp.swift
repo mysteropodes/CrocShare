@@ -10,6 +10,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let store = Self.store else { return }
         for url in urls {
+            // Double-clic sur un fichier d'invitation .crocinvite.
+            if url.pathExtension == "crocinvite",
+               let data = try? Data(contentsOf: url),
+               let invite = try? JSONDecoder().decode(InviteFile.self, from: data) {
+                store.importInvite(invite)
+                continue
+            }
             guard let stub = PlaceholderManager.readStub(at: url),
                   let contact = store.contacts.first(where: { $0.id == stub.contactID })
             else { continue }

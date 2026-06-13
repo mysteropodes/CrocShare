@@ -14,7 +14,7 @@ import Combine
 final class SyncEngine: ObservableObject {
     private let store: AppStore
     private var tasks: [String: Task<Void, Never>] = [:]
-    private var cancellable: AnyCancellable?
+    private var cancellables = Set<AnyCancellable>()
 
     init(store: AppStore) {
         self.store = store
@@ -22,9 +22,18 @@ final class SyncEngine: ObservableObject {
 
     func start() {
         rebuild()
-        cancellable = store.$contacts
+        store.$contacts
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.rebuild() }
+            .store(in: &cancellables)
+        store.$pendingInvites
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.rebuild() }
+            .store(in: &cancellables)
+        store.$pendingInviteAcks
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.rebuild() }
+            .store(in: &cancellables)
     }
 
     private func rebuild() {
@@ -42,6 +51,59 @@ final class SyncEngine: ObservableObject {
             spawn("queue-\(contact.id)") { [weak self] in await self?.queueLoop(contact) }
             spawn("chat-out-\(contact.id)") { [weak self] in await self?.chatOfferLoop(contact) }
             spawn("chat-in-\(contact.id)") { [weak self] in await self?.chatPollLoop(contact) }
+        }
+        // Invitations asynchrones : l'hôte attend l'accusé, l'invité le délivre.
+        for invite in store.pendingInvites {
+            spawn("invite-\(invite.id)") { [weak self] in await self?.inviteWaitLoop(invite) }
+        }
+        for ack in store.pendingInviteAcks {
+            spawn("inviteack-\(ack.id)") { [weak self] in await self?.inviteAckLoop(ack) }
+        }
+    }
+
+    // MARK: - Invitations asynchrones
+
+    private func inviteWaitLoop(_ invite: PendingInvite) async {
+        let code = Channels.code(secret: invite.secret,
+                                 label: "inviteack:\(invite.id.uuidString)")
+        while !Task.isCancelled,
+              store.pendingInvites.contains(where: { $0.id == invite.id }) {
+            guard store.crocPath != nil else {
+                try? await Task.sleep(for: .seconds(10)); continue
+            }
+            let dir = tempDir("invite-\(invite.id)")
+            let result = await CrocService.receive(code: code, outDir: dir, timeout: 300)
+            if result.ok,
+               let data = try? Data(contentsOf: dir.appendingPathComponent("crocshare-pairing.json")),
+               let payload = try? JSONDecoder().decode(PairingPayload.self, from: data) {
+                store.completeInvite(invite, payload: payload)
+                return
+            }
+            try? await Task.sleep(for: .seconds(5))
+        }
+    }
+
+    private func inviteAckLoop(_ ack: PendingInviteAck) async {
+        let code = Channels.code(secret: ack.secret,
+                                 label: "inviteack:\(ack.id.uuidString)")
+        while !Task.isCancelled,
+              store.pendingInviteAcks.contains(where: { $0.id == ack.id }) {
+            guard store.crocPath != nil else {
+                try? await Task.sleep(for: .seconds(10)); continue
+            }
+            let payload = PairingPayload(id: store.config.myID,
+                                         name: store.config.myName, secret: nil)
+            let dir = tempDir("inviteack-\(ack.id)")
+            let file = dir.appendingPathComponent("crocshare-pairing.json")
+            if let data = try? JSONEncoder().encode(payload) {
+                try? data.write(to: file)
+                let result = await CrocService.send(code: code, paths: [file.path], timeout: 60)
+                if result.ok {
+                    store.pendingInviteAcks.removeAll { $0.id == ack.id }
+                    return
+                }
+            }
+            try? await Task.sleep(for: .seconds(30))
         }
     }
 

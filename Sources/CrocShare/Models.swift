@@ -116,6 +116,29 @@ struct FileRequest: Codable {
     var paths: [String]
 }
 
+/// Fichier d'invitation (.crocinvite) : appairage asynchrone par mail/message.
+/// L'invité l'importe quand il veut ; l'accusé revient via croc dès que les
+/// deux machines sont en ligne en même temps, sans coordination.
+struct InviteFile: Codable {
+    var inviteID: UUID
+    var secret: String
+    var hostID: UUID
+    var hostName: String
+}
+
+/// Côté hôte : invitation émise, en attente d'acceptation.
+struct PendingInvite: Codable, Identifiable, Hashable {
+    var id: UUID
+    var secret: String
+    var createdAt: Date
+}
+
+/// Côté invité : accusé d'acceptation à délivrer à l'hôte (réessayé jusqu'au succès).
+struct PendingInviteAck: Codable, Identifiable, Hashable {
+    var id: UUID
+    var secret: String
+}
+
 /// Payload échangé lors de l'appairage (le secret n'est présent que côté hôte).
 struct PairingPayload: Codable {
     var id: UUID

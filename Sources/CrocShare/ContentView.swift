@@ -588,6 +588,71 @@ struct NewChannelSheet: View {
     }
 }
 
+/// Appairage asynchrone : fichier .crocinvite à envoyer par mail/message.
+/// Pas besoin d'être en ligne en même temps — la connexion s'établit toute
+/// seule à la première présence simultanée.
+struct InviteFilePane: View {
+    @EnvironmentObject var store: AppStore
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("Envoie un fichier d'invitation par mail ou message. Ton contact l'importe quand il veut — pas besoin d'être connectés en même temps : la liaison s'établira automatiquement.")
+                .font(.callout).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            HStack {
+                Button("Créer une invitation…") { exportInvite() }
+                    .buttonStyle(.borderedProminent)
+                Button("Importer une invitation…") { importInvite() }
+            }
+
+            if !store.pendingInvites.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(store.pendingInvites) { invite in
+                        HStack {
+                            Image(systemName: "hourglass")
+                            Text("Invitation du \(invite.createdAt.formatted(date: .abbreviated, time: .shortened)) — en attente d'acceptation")
+                                .font(.caption)
+                            Button("Révoquer") {
+                                store.pendingInvites.removeAll { $0.id == invite.id }
+                            }
+                            .font(.caption)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func exportInvite() {
+        let panel = NSSavePanel()
+        if let type = UTType(filenameExtension: "crocinvite") {
+            panel.allowedContentTypes = [type]
+        }
+        panel.nameFieldStringValue = "Invitation CrocShare de \(store.config.myName).crocinvite"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let invite = store.makeInvite()
+        let enc = JSONEncoder()
+        enc.outputFormatting = .prettyPrinted
+        try? (try? enc.encode(invite))?.write(to: url)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private func importInvite() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let type = UTType(filenameExtension: "crocinvite") {
+            panel.allowedContentTypes = [type]
+        }
+        guard panel.runModal() == .OK, let url = panel.url,
+              let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(InviteFile.self, from: data)
+        else { return }
+        store.importInvite(file)
+    }
+}
+
 /// Invitation / retrait de membres d'un canal existant (créateur uniquement).
 /// Les invités voient le canal apparaître à leur prochaine connexion.
 struct ChannelMembersSheet: View {
@@ -1168,13 +1233,16 @@ struct PairingSheet: View {
             Picker("", selection: $mode) {
                 Text("Inviter").tag(0)
                 Text("Rejoindre").tag(1)
+                Text("Par fichier").tag(2)
             }
             .pickerStyle(.segmented)
             .disabled(pairing.state != .idle)
 
             switch pairing.state {
             case .idle:
-                if mode == 0 {
+                if mode == 2 {
+                    InviteFilePane()
+                } else if mode == 0 {
                     Text("Génère un code et communique-le à ton contact (téléphone, message…). Les clés seront ensuite échangées et gérées automatiquement.")
                         .font(.callout).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

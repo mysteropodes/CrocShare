@@ -70,6 +70,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
             <key>LSItemContentTypes</key>
             <array><string>com.crocshare.placeholder</string></array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Invitation CrocShare</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.crocshare.invite</string></array>
+        </dict>
     </array>
     <key>UTExportedTypeDeclarations</key>
     <array>
@@ -82,6 +89,17 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
             <dict>
                 <key>public.filename-extension</key>
                 <array><string>croc</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.crocshare.invite</string>
+            <key>UTTypeDescription</key><string>Invitation CrocShare</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.json</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>crocinvite</string></array>
             </dict>
         </dict>
     </array>
