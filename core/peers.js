@@ -73,7 +73,7 @@ class PeerManager {
       this._write(conn, { type: '__ping' })
     }, PING_INTERVAL)
     this.peers.set(remoteKey, peer)
-    this.emit('peer.connected', { contactKey: this.encodeKey(remoteKey), direct })
+    this.emit('peer.connected', { contactKey: this.encodeKey(remoteKey), direct, name: name || null })
   }
 
   _onClose (remoteKey, conn) {

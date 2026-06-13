@@ -78,6 +78,7 @@ actor CoreBridge {
 
     // Paramètres d'init mémorisés pour la relance automatique.
     private var lastSeed: String?
+    private var lastDisplayName: String?
     private let storagePath: String
 
     // Flux d'événements consommé par le moteur P2P.
@@ -130,11 +131,13 @@ actor CoreBridge {
     }
 
     /// Démarre le compagnon et l'initialise (identité + DHT).
-    func start(seed: String?) async throws -> [String: Any] {
+    func start(seed: String?, displayName: String?) async throws -> [String: Any] {
         lastSeed = seed
+        lastDisplayName = displayName
         try launch()
         var params: [String: Any] = ["storagePath": storagePath]
         if let seed { params["seed"] = seed }
+        if let displayName { params["displayName"] = displayName }
         let result = try await request("init", params)
         restartAttempt = 0
         return result
@@ -166,6 +169,7 @@ actor CoreBridge {
             try launch()
             var params: [String: Any] = ["storagePath": storagePath]
             if let lastSeed { params["seed"] = lastSeed }
+            if let lastDisplayName { params["displayName"] = lastDisplayName }
             _ = try await request("init", params)
             _ = try? await request("swarm.connectAll", [:])
             restartAttempt = 0

@@ -105,6 +105,7 @@ const methods = {
     }
     core.keyPair = identity.deriveKeyPair(seed)
     core.selfKeyHex = identity.hex(core.keyPair.publicKey)
+    if (params.displayName) core.displayName = params.displayName
     core.contacts = await loadContacts()
 
     core.swarm = createSwarm(core.keyPair, { bootstrap: params.bootstrap })

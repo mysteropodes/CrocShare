@@ -40,6 +40,7 @@ struct ContentView: View {
 
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var pairing: PairingService
+    @EnvironmentObject var p2p: P2PEngine
     @State private var selection: UUID?
     @State private var mainTab: MainTab = .chat
     @State private var showPairingSheet = false
@@ -119,6 +120,20 @@ struct ContentView: View {
                             }
                     }
                 }
+                if (store.config.experimentalP2P ?? false), !p2p.contacts.isEmpty {
+                    Section("P2P (test)") {
+                        ForEach(p2p.contacts, id: \.self) { key in
+                            HStack {
+                                Circle().fill(p2p.isOnline(key) ? Color.green : Color.gray.opacity(0.5))
+                                    .frame(width: 8, height: 8)
+                                Text(p2p.name(for: key))
+                                Spacer()
+                                UnreadBadge(count: p2p.unread[key] ?? 0)
+                            }
+                            .tag(P2PEngine.uuid(forKey: key))
+                        }
+                    }
+                }
             }
             }
             .navigationSplitViewColumnWidth(min: 210, ideal: 240)
@@ -151,7 +166,9 @@ struct ContentView: View {
         case .config:
             ConfigTab()
         case .chat:
-            if selection == Self.broadcastID {
+            if let id = selection, let key = p2pKey(for: id) {
+                P2PChatView(contactKey: key)
+            } else if selection == Self.broadcastID {
                 GroupChatView()
             } else if let id = selection, let channel = store.channels.first(where: { $0.id == id }) {
                 ChannelChatView(channel: channel)
@@ -168,6 +185,134 @@ struct ContentView: View {
                                    text: "Sélectionne un contact à gauche pour voir et télécharger ses fichiers.")
             }
         }
+    }
+
+    /// Retrouve la clé P2P (z32) correspondant à une sélection (UUID dérivé).
+    private func p2pKey(for id: UUID) -> String? {
+        guard store.config.experimentalP2P ?? false else { return nil }
+        return p2p.contacts.first { P2PEngine.uuid(forKey: $0) == id }
+    }
+}
+
+/// Conversation P2P (Phase 2) : chat texte chiffré sur le tunnel Hyperswarm,
+/// façon Slack (aligné à gauche, avatar+nom, séparateurs par jour).
+struct P2PChatView: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let contactKey: String
+    @State private var draft = ""
+
+    var messages: [P2PEngine.P2PMessage] {
+        (p2p.chats[contactKey] ?? []).sorted { $0.date < $1.date }
+    }
+    var days: [(date: Date, messages: [P2PEngine.P2PMessage])] {
+        let cal = Calendar.current
+        var out: [(date: Date, messages: [P2PEngine.P2PMessage])] = []
+        for m in messages {
+            let day = cal.startOfDay(for: m.date)
+            if let last = out.last, cal.isDate(last.date, inSameDayAs: day) {
+                out[out.count - 1].messages.append(m)
+            } else {
+                out.append((date: day, messages: [m]))
+            }
+        }
+        return out
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                AvatarView(name: p2p.name(for: contactKey),
+                           id: P2PEngine.uuid(forKey: contactKey), size: 30)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(p2p.name(for: contactKey)).font(.headline)
+                    Text(p2p.isOnline(contactKey) ? "en ligne · P2P chiffré" : "hors ligne")
+                        .font(.caption)
+                        .foregroundStyle(p2p.isOnline(contactKey) ? Color.green : .secondary)
+                }
+                Spacer()
+                Image(systemName: "lock.fill").foregroundStyle(.secondary).help("Bout-à-bout, sans relai")
+            }
+            .padding(.horizontal).padding(.vertical, 10)
+            Divider()
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(days, id: \.date) { day in
+                            DayDivider(date: day.date)
+                            ForEach(Array(day.messages.enumerated()), id: \.element.id) { idx, m in
+                                let prev = idx > 0 ? day.messages[idx - 1] : nil
+                                let grouped = prev != nil && prev!.fromMe == m.fromMe
+                                    && m.date.timeIntervalSince(prev!.date) < 300
+                                P2PRow(message: m, contactKey: contactKey, showHeader: !grouped)
+                                    .id(m.id)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+                .onAppear { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+                .onChange(of: messages.count) { _ in
+                    withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+                }
+            }
+            Divider()
+            ChatComposer(draft: $draft, placeholder: "Message P2P à \(p2p.name(for: contactKey))…") { text in
+                p2p.send(text, to: contactKey)
+            }
+            if !p2p.isOnline(contactKey) {
+                Text("Hors ligne — le message partira dès que \(p2p.name(for: contactKey)) sera connecté.")
+                    .font(.caption).foregroundStyle(.orange).padding(.bottom, 6)
+            }
+        }
+        .onAppear { p2p.markRead(contactKey) }
+        .onChange(of: messages.count) { _ in p2p.markRead(contactKey) }
+    }
+}
+
+struct P2PRow: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let message: P2PEngine.P2PMessage
+    let contactKey: String
+    let showHeader: Bool
+
+    var displayName: String { message.fromMe ? (p2p.myName.isEmpty ? "Moi" : p2p.myName) : p2p.name(for: contactKey) }
+    var avatarID: UUID {
+        P2PEngine.uuid(forKey: message.fromMe ? p2p.myPublicKey : contactKey)
+    }
+    var formatted: AttributedString {
+        (try? AttributedString(markdown: message.text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(message.text)
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            if showHeader {
+                AvatarView(name: displayName, id: avatarID, size: 32).padding(.top, 1)
+            } else {
+                Color.clear.frame(width: 32)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                if showHeader {
+                    HStack(spacing: 6) {
+                        Text(displayName).font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AvatarView(name: displayName, id: avatarID).color)
+                        Text(message.date.formatted(date: .omitted, time: .shortened))
+                            .font(.caption2).foregroundStyle(.secondary)
+                        if message.fromMe {
+                            Image(systemName: message.delivered ? "checkmark.circle.fill" : "clock")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Text(formatted).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, showHeader ? 4 : 1)
     }
 }
 
@@ -1780,7 +1925,7 @@ struct SettingsContent: View {
                         get: { store.config.experimentalP2P ?? false },
                         set: { on in
                             store.config.experimentalP2P = on
-                            if on { p2p.enable() } else { p2p.disable() }
+                            if on { p2p.enable(displayName: store.config.myName) } else { p2p.disable() }
                         }
                     ))
                     .toggleStyle(.switch)

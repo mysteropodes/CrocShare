@@ -25,8 +25,8 @@ test('appairage cs1- + ping/echo entre deux cores', async (t) => {
   t.teardown(() => a.stop())
   t.teardown(() => b.stop())
 
-  const ra = await a.request('init', { storagePath: a.storagePath, bootstrap })
-  const rb = await b.request('init', { storagePath: b.storagePath, bootstrap })
+  const ra = await a.request('init', { storagePath: a.storagePath, bootstrap, displayName: 'Alice' })
+  const rb = await b.request('init', { storagePath: b.storagePath, bootstrap, displayName: 'Bob' })
   const aKey = ra.publicKey
   const bKey = rb.publicKey
   t.ok(aKey && bKey, 'deux identités générées')
@@ -40,9 +40,11 @@ test('appairage cs1- + ping/echo entre deux cores', async (t) => {
   const accepted = await b.request('pairing.acceptInvite', { invite })
   t.is(accepted.contactKey, aKey, "l'invité reçoit la clé de l'hôte")
 
-  await aConnected
-  await bConnected
+  const aSees = await aConnected
+  const bSees = await bConnected
   t.pass('connexion persistante établie des deux côtés')
+  t.is(aSees.name, 'Bob', "A voit le nom de B")
+  t.is(bSees.name, 'Alice', "B voit le nom de A")
 
   // B renvoie un echo à chaque ping reçu.
   b.on('peer.message', ({ contactKey, payload }) => {

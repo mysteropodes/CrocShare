@@ -75,7 +75,7 @@ struct CrocShareApp: App {
                     }
                     engine.start()
                     if store.config.experimentalP2P ?? false {
-                        p2p.enable()
+                        p2p.enable(displayName: store.config.myName)
                     }
                 }
         }
