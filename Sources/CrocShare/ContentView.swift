@@ -426,6 +426,7 @@ struct ChatView: View {
     @EnvironmentObject var store: AppStore
     let contact: Contact
     @State private var draft = ""
+    @State private var threadRoot: ChatMessage?
 
     var messages: [ChatMessage] {
         (store.chats[contact.id] ?? []).filter { $0.channelID == nil }
@@ -433,7 +434,8 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ChatTranscript(messages: messages, myID: store.config.myID, showSender: false)
+            ChatTranscript(allMessages: messages, myID: store.config.myID,
+                           onOpenThread: { threadRoot = $0 })
             Divider()
             ChatComposer(draft: $draft, placeholder: "Message à \(contact.name)…") { text in
                 store.sendMessage(text, to: contact)
@@ -449,12 +451,20 @@ struct ChatView: View {
         }
         .onAppear { store.markRead(contact.id) }
         .onChange(of: messages.count) { _ in store.markRead(contact.id) }
+        .sheet(item: $threadRoot) { root in
+            ThreadSheet(root: root,
+                        replies: messages.filter { $0.replyTo == root.id },
+                        scopeName: contact.name,
+                        onSend: { store.sendMessage($0, to: contact, replyTo: root.id) },
+                        onAttach: { store.sendMessage("", attachment: $0, to: contact, replyTo: root.id) })
+        }
     }
 }
 
 struct GroupChatView: View {
     @EnvironmentObject var store: AppStore
     @State private var draft = ""
+    @State private var threadRoot: ChatMessage?
 
     /// Union de toutes les conversations directes, dédoublonnée par id
     /// (un message de groupe a le même id dans chaque conversation).
@@ -477,7 +487,8 @@ struct GroupChatView: View {
             }
             .padding()
             Divider()
-            ChatTranscript(messages: messages, myID: store.config.myID, showSender: true)
+            ChatTranscript(allMessages: messages, myID: store.config.myID,
+                           onOpenThread: { threadRoot = $0 })
             Divider()
             ChatComposer(draft: $draft, placeholder: "Message au groupe…") { text in
                 store.broadcast(text)
@@ -485,6 +496,13 @@ struct GroupChatView: View {
         }
         .chatFileDrop(scopeName: "Tous") { attachment in
             store.broadcast("", attachment: attachment)
+        }
+        .sheet(item: $threadRoot) { root in
+            ThreadSheet(root: root,
+                        replies: messages.filter { $0.replyTo == root.id },
+                        scopeName: "Tous",
+                        onSend: { store.broadcast($0, replyTo: root.id) },
+                        onAttach: { store.broadcast("", attachment: $0, replyTo: root.id) })
         }
     }
 }
@@ -494,6 +512,7 @@ struct ChannelChatView: View {
     let channel: Channel
     @State private var draft = ""
     @State private var showMembers = false
+    @State private var threadRoot: ChatMessage?
 
     var members: [Contact] {
         store.contacts.filter { channel.memberIDs.contains($0.id) }
@@ -527,8 +546,8 @@ struct ChannelChatView: View {
                 ChannelMembersSheet(channel: channel)
             }
             Divider()
-            ChatTranscript(messages: store.messages(in: channel),
-                           myID: store.config.myID, showSender: true)
+            ChatTranscript(allMessages: store.messages(in: channel),
+                           myID: store.config.myID, onOpenThread: { threadRoot = $0 })
             Divider()
             ChatComposer(draft: $draft, placeholder: "Message dans #\(channel.name)…") { text in
                 store.sendChannelMessage(text, in: channel)
@@ -539,6 +558,13 @@ struct ChannelChatView: View {
         }
         .onAppear { store.markRead(channel.id) }
         .onChange(of: store.messages(in: channel).count) { _ in store.markRead(channel.id) }
+        .sheet(item: $threadRoot) { root in
+            ThreadSheet(root: root,
+                        replies: store.messages(in: channel).filter { $0.replyTo == root.id },
+                        scopeName: channel.name,
+                        onSend: { store.sendChannelMessage($0, in: channel, replyTo: root.id) },
+                        onAttach: { store.sendChannelMessage("", attachment: $0, in: channel, replyTo: root.id) })
+        }
     }
 }
 
@@ -868,37 +894,112 @@ struct ChatFileDropModifier: ViewModifier {
     }
 }
 
+// Regroupe des messages par jour (séparateurs façon Slack).
+func groupByDay(_ msgs: [ChatMessage]) -> [(date: Date, messages: [ChatMessage])] {
+    let cal = Calendar.current
+    let sorted = msgs.sorted { $0.date < $1.date }
+    var out: [(date: Date, messages: [ChatMessage])] = []
+    for m in sorted {
+        let day = cal.startOfDay(for: m.date)
+        if let last = out.last, cal.isDate(last.date, inSameDayAs: day) {
+            out[out.count - 1].messages.append(m)
+        } else {
+            out.append((date: day, messages: [m]))
+        }
+    }
+    return out
+}
+
+func dayLabel(_ date: Date) -> String {
+    let cal = Calendar.current
+    if cal.isDateInToday(date) { return "Aujourd'hui" }
+    if cal.isDateInYesterday(date) { return "Hier" }
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "fr_FR")
+    f.dateFormat = "EEEE d MMMM"
+    let s = f.string(from: date)
+    return s.prefix(1).uppercased() + s.dropFirst()
+}
+
+func relativeDay(_ date: Date) -> String {
+    let r = RelativeDateTimeFormatter()
+    r.locale = Locale(identifier: "fr_FR")
+    r.unitsStyle = .full
+    return r.localizedString(for: date, relativeTo: Date())
+}
+
+/// Séparateur de jour centré (« Aujourd'hui », « Hier », « jeudi 28 mai »).
+struct DayDivider: View {
+    let date: Date
+    var body: some View {
+        HStack(spacing: 8) {
+            line
+            Text(dayLabel(date))
+                .font(.caption.bold()).foregroundStyle(.secondary)
+                .padding(.horizontal, 10).padding(.vertical, 3)
+                .background(
+                    Capsule().fill(Color(nsColor: .windowBackgroundColor))
+                        .overlay(Capsule().stroke(.gray.opacity(0.25)))
+                )
+            line
+        }
+        .padding(.vertical, 8).padding(.horizontal, 12)
+    }
+    var line: some View { Rectangle().frame(height: 1).foregroundStyle(.gray.opacity(0.18)) }
+}
+
+/// Transcription façon Slack : aligné à gauche, avatar + nom par message,
+/// séparateurs par jour, messages consécutifs groupés, fils de réponse.
 struct ChatTranscript: View {
-    let messages: [ChatMessage]
+    @EnvironmentObject var store: AppStore
+    let allMessages: [ChatMessage]
     let myID: UUID
-    let showSender: Bool
+    var onOpenThread: (ChatMessage) -> Void
+
+    private var topLevel: [ChatMessage] { allMessages.filter { $0.replyTo == nil } }
+    private var replyInfo: [UUID: (count: Int, last: Date)] {
+        var d: [UUID: (Int, Date)] = [:]
+        for m in allMessages where m.replyTo != nil {
+            let k = m.replyTo!
+            if let e = d[k] { d[k] = (e.0 + 1, max(e.1, m.date)) } else { d[k] = (1, m.date) }
+        }
+        return d
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(messages) { msg in
-                        ChatBubble(message: msg, isMine: msg.fromID == myID, showSender: showSender)
-                            .id(msg.id)
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(groupByDay(topLevel), id: \.date) { group in
+                        DayDivider(date: group.date)
+                        ForEach(Array(group.messages.enumerated()), id: \.element.id) { idx, msg in
+                            let prev = idx > 0 ? group.messages[idx - 1] : nil
+                            let grouped = prev != nil && prev!.fromID == msg.fromID
+                                && msg.date.timeIntervalSince(prev!.date) < 300
+                            let info = replyInfo[msg.id]
+                            MessageRow(message: msg, showHeader: !grouped,
+                                       replyCount: info?.count ?? 0, lastReplyDate: info?.last,
+                                       onOpenThread: { onOpenThread(msg) })
+                                .id(msg.id)
+                        }
                     }
                 }
-                .padding()
+                .padding(.vertical, 6)
             }
-            .onAppear { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
-            .onChange(of: messages.count) { _ in
-                withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+            .onAppear { proxy.scrollTo(topLevel.last?.id, anchor: .bottom) }
+            .onChange(of: topLevel.count) { _ in
+                withAnimation { proxy.scrollTo(topLevel.last?.id, anchor: .bottom) }
             }
         }
     }
 }
 
-struct ChatBubble: View {
+/// Corps d'un message (pièce jointe / Rive / texte Markdown) — réutilisé en
+/// transcription et dans les fils.
+struct MessageBody: View {
     @EnvironmentObject var store: AppStore
     let message: ChatMessage
-    let isMine: Bool
-    let showSender: Bool
 
-    /// Rendu Markdown inline : **gras**, _italique_, ~~barré~~, `code`, [liens](…).
     var formattedText: AttributedString {
         (try? AttributedString(
             markdown: message.text,
@@ -907,52 +1008,129 @@ struct ChatBubble: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if isMine { Spacer(minLength: 60) }
-            if !isMine {
-                AvatarView(name: message.fromName, id: message.fromID, size: 28)
-                    .padding(.top, 2)
+        VStack(alignment: .leading, spacing: 4) {
+            if let attachment = message.attachment {
+                AttachmentBubble(message: message, attachment: attachment,
+                                 isMine: message.fromID == store.config.myID)
             }
-            VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
-                if !isMine {
-                    Text(message.fromName)
-                        .font(.caption.bold())
-                        .foregroundStyle(AvatarView(name: message.fromName, id: message.fromID).color)
-                }
-                if let attachment = message.attachment {
-                    AttachmentBubble(message: message, attachment: attachment, isMine: isMine)
-                }
-                if let riveURL = RiveLinkPreview.riveLink(in: message.text) {
-                    RiveLinkPreview(url: riveURL)
-                }
-                if !message.text.isEmpty {
-                    Text(formattedText)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(isMine ? Color.accentColor.opacity(0.85) : Color.gray.opacity(0.2))
-                        )
-                        .foregroundStyle(isMine ? Color.white : Color.primary)
-                }
-                HStack(spacing: 4) {
-                    Text(message.date.formatted(date: .omitted, time: .shortened))
-                    if isMine {
-                        Image(systemName: message.delivered ? "checkmark.circle.fill" : "clock")
+            if let riveURL = RiveLinkPreview.riveLink(in: message.text) {
+                RiveLinkPreview(url: riveURL)
+            }
+            if !message.text.isEmpty {
+                Text(formattedText)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+/// Une ligne de message façon Slack : gouttière avatar + nom + heure, corps,
+/// et — pour un message racine ayant des réponses — l'accès au fil.
+struct MessageRow: View {
+    @EnvironmentObject var store: AppStore
+    let message: ChatMessage
+    let showHeader: Bool
+    var replyCount: Int = 0
+    var lastReplyDate: Date? = nil
+    var onOpenThread: () -> Void = {}
+
+    var isMine: Bool { message.fromID == store.config.myID }
+    var senderColor: Color { AvatarView(name: message.fromName, id: message.fromID).color }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            // Gouttière : avatar (1er du groupe) ou espace réservé.
+            if showHeader {
+                AvatarView(name: message.fromName, id: message.fromID, size: 32).padding(.top, 1)
+            } else {
+                Color.clear.frame(width: 32)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                if showHeader {
+                    HStack(spacing: 6) {
+                        Text(message.fromName).font(.subheadline.weight(.semibold)).foregroundStyle(senderColor)
+                        Text(message.date.formatted(date: .omitted, time: .shortened))
+                            .font(.caption2).foregroundStyle(.secondary)
+                        if isMine && !message.delivered {
+                            Image(systemName: "clock").font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                 }
-                .font(.caption2).foregroundStyle(.secondary)
+                MessageBody(message: message)
+                if replyCount > 0 {
+                    Button(action: onOpenThread) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "bubble.left.and.bubble.right.fill").font(.caption2)
+                            Text("\(replyCount) réponse\(replyCount > 1 ? "s" : "")").font(.caption.bold())
+                            if let d = lastReplyDate {
+                                Text("· dernière réponse \(relativeDay(d))")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 8).stroke(.gray.opacity(0.25)))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                    .padding(.top, 2)
+                }
             }
-            if !isMine { Spacer(minLength: 60) }
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 12).padding(.vertical, showHeader ? 4 : 1)
         .contextMenu {
-            Button(role: .destructive) {
-                store.deleteMessage(message)
-            } label: {
+            Button { onOpenThread() } label: {
+                Label("Répondre dans un fil", systemImage: "arrowshape.turn.up.left")
+            }
+            Button(role: .destructive) { store.deleteMessage(message) } label: {
                 Label(isMine ? "Supprimer pour tout le monde" : "Supprimer pour moi",
                       systemImage: "trash")
             }
         }
+    }
+}
+
+/// Panneau d'un fil de discussion (réponses à un message), façon Slack.
+struct ThreadSheet: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) var dismiss
+    let root: ChatMessage
+    let replies: [ChatMessage]
+    let scopeName: String
+    var onSend: (String) -> Void
+    var onAttach: (Attachment) -> Void
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Fil de discussion").font(.headline)
+                Spacer()
+                Button("Fermer") { dismiss() }
+            }
+            .padding()
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    MessageRow(message: root, showHeader: true)
+                    HStack(spacing: 8) {
+                        Text("\(replies.count) réponse\(replies.count > 1 ? "s" : "")")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Rectangle().frame(height: 1).foregroundStyle(.gray.opacity(0.2))
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    ForEach(replies.sorted { $0.date < $1.date }) { r in
+                        MessageRow(message: r, showHeader: true)
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+            Divider()
+            ChatComposer(draft: $draft, placeholder: "Répondre…") { onSend($0) }
+        }
+        .frame(width: 460, height: 560)
+        .chatFileDrop(scopeName: scopeName) { onAttach($0) }
     }
 }
 
