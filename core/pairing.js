@@ -7,7 +7,7 @@ const identity = require('./identity')
 const { RpcError } = require('./rpc')
 
 const INVITE_TTL = 15 * 60 * 1000 // validité du code
-const ACCEPT_TIMEOUT = 45 * 1000  // attente côté invité
+const ACCEPT_TIMEOUT = 120 * 1000 // attente côté invité (DHT publique à froid = lent)
 
 class PairingManager {
   constructor ({ swarm, log }) {

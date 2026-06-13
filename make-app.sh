@@ -163,7 +163,7 @@ codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Con
 # Runtime Node + addons natifs du compagnon (.node) signés un par un.
 # Node a besoin d'entitlements JIT (V8) et de pouvoir charger des addons .node
 # sous le hardened runtime, sinon il crashe au lancement.
-NODE_ENT="$(mktemp /tmp/crocshare-node-XXXX.entitlements)"
+NODE_ENT="$(mktemp -t crocshare-node).entitlements"
 cat > "$NODE_ENT" <<'ENT'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

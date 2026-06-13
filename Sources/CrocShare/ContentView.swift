@@ -1021,20 +1021,33 @@ struct P2PPanel: View {
 
             Divider()
 
-            Text("Journal").font(.headline)
+            HStack {
+                Text("Journal").font(.headline)
+                Spacer()
+                Button("Copier") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(p2p.log.joined(separator: "\n"), forType: .string)
+                }
+                .font(.caption)
+                Button("Effacer") { p2p.log.removeAll() }.font(.caption)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
-                    ForEach(Array(p2p.log.suffix(60).enumerated()), id: \.offset) { _, line in
+                    ForEach(Array(p2p.log.suffix(80).enumerated()), id: \.offset) { _, line in
                         Text(line).font(.system(size: 10, design: .monospaced))
+                            .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
             .frame(height: 140)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+
+            Text("Test à DEUX machines : crée le code sur un Mac, saisis-le sur l'AUTRE (P2P activé des deux côtés). Une même app ne peut pas s'appairer avec elle-même.")
+                .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(20)
-        .frame(width: 560, height: 560)
+        .frame(width: 560, height: 600)
     }
 }
 
