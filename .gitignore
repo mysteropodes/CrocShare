@@ -4,3 +4,5 @@ dist/
 .DS_Store
 .swiftpm/
 vendor/
+core/node_modules/
+core/test/tmp/
