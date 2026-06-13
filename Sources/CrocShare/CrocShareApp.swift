@@ -50,6 +50,7 @@ struct CrocShareApp: App {
     @StateObject private var store: AppStore
     @StateObject private var engine: SyncEngine
     @StateObject private var pairing: PairingService
+    @StateObject private var p2p = P2PEngine()
 
     init() {
         let store = AppStore()
@@ -64,6 +65,7 @@ struct CrocShareApp: App {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(pairing)
+                .environmentObject(p2p)
                 .onAppear {
                     Notifier.requestPermission()
                     UpdateManager.shared.start()
@@ -72,6 +74,9 @@ struct CrocShareApp: App {
                         RelayServer.shared.start()
                     }
                     engine.start()
+                    if store.config.experimentalP2P ?? false {
+                        p2p.enable()
+                    }
                 }
         }
 

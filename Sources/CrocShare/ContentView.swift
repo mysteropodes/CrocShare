@@ -700,6 +700,104 @@ struct ChannelMembersSheet: View {
     }
 }
 
+/// Panneau du moteur expérimental P2P (Phase 1) : identité, appairage cs1-,
+/// pairs connectés, ping de test, journal en direct.
+struct P2PPanel: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @Environment(\.dismiss) var dismiss
+    @State private var joinCode = ""
+
+    var statusText: String {
+        switch p2p.status {
+        case .stopped: return "Arrêté"
+        case .starting: return "Démarrage…"
+        case .ready: return "Prêt"
+        case .reconnecting(let s): return "Reconnexion (\(s)s)…"
+        case .failed(let m): return "Erreur : \(m)"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Moteur P2P (expérimental)").font(.title3.bold())
+                Spacer()
+                Text(statusText).font(.caption).foregroundStyle(.secondary)
+                Button("Fermer") { dismiss() }
+            }
+
+            LabeledContent("Mon identité") {
+                Text(p2p.myPublicKey.isEmpty ? "—" : p2p.myPublicKey)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+            }
+
+            Divider()
+
+            HStack(alignment: .top, spacing: 20) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Inviter").font(.headline)
+                    Button("Créer un code cs1-…") { p2p.createInvite() }
+                    if !p2p.inviteCode.isEmpty {
+                        HStack {
+                            Text(p2p.inviteCode)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(p2p.inviteCode, forType: .string)
+                            } label: { Image(systemName: "doc.on.doc") }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Rejoindre").font(.headline)
+                    TextField("cs1-…", text: $joinCode)
+                        .textFieldStyle(.roundedBorder).frame(width: 220)
+                    Button("Rejoindre") { p2p.acceptInvite(joinCode); joinCode = "" }
+                        .disabled(joinCode.isEmpty)
+                }
+            }
+
+            Divider()
+
+            Text("Pairs connectés (\(p2p.peers.count))").font(.headline)
+            if p2p.peers.isEmpty {
+                Text("Aucun pair connecté.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(p2p.peers) { peer in
+                    HStack {
+                        Circle().fill(.green).frame(width: 8, height: 8)
+                        Text(peer.key).font(.system(.caption, design: .monospaced))
+                            .lineLimit(1).truncationMode(.middle)
+                        Text(peer.direct ? "direct" : "relayé")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Ping") { p2p.ping(peer.key) }.font(.caption)
+                    }
+                }
+            }
+
+            Divider()
+
+            Text("Journal").font(.headline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(p2p.log.suffix(60).enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: 10, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .frame(height: 140)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.1)))
+        }
+        .padding(20)
+        .frame(width: 560, height: 560)
+    }
+}
+
 /// Journal des opérations croc, pour diagnostiquer les soucis de connexion.
 struct SyncLogSheet: View {
     @EnvironmentObject var store: AppStore
@@ -1305,8 +1403,10 @@ struct PairingSheet: View {
 struct SettingsSheet: View {
     @EnvironmentObject var store: AppStore
     @ObservedObject var relay = RelayServer.shared
+    @EnvironmentObject var p2p: P2PEngine
     @Environment(\.dismiss) var dismiss
     @State private var showLog = false
+    @State private var showP2P = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1410,6 +1510,26 @@ struct SettingsSheet: View {
             Text("Contact « Démo » simulé localement : toujours en ligne, répond aux messages, fichiers téléchargeables (générés sur place). Aucun transfert croc réel.")
                 .font(.caption).foregroundStyle(.secondary)
 
+            Divider()
+
+            LabeledContent("Moteur expérimental P2P") {
+                HStack {
+                    Toggle("", isOn: Binding(
+                        get: { store.config.experimentalP2P ?? false },
+                        set: { on in
+                            store.config.experimentalP2P = on
+                            if on { p2p.enable() } else { p2p.disable() }
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    if store.config.experimentalP2P ?? false {
+                        Button("Panneau P2P…") { showP2P = true }
+                    }
+                }
+            }
+            Text("Moteur P2P Hyperswarm (Phase 1) — connexions persistantes chiffrées, sans relai. Coexiste avec croc, n'affecte pas tes contacts actuels.")
+                .font(.caption).foregroundStyle(.secondary)
+
             HStack {
                 Spacer()
                 Button("Fermer") { dismiss() }.buttonStyle(.borderedProminent)
@@ -1418,6 +1538,7 @@ struct SettingsSheet: View {
         .padding(28)
         .frame(width: 520)
         .sheet(isPresented: $showLog) { SyncLogSheet() }
+        .sheet(isPresented: $showP2P) { P2PPanel() }
     }
 
     private func pickFolder() -> URL? {

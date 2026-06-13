@@ -20,6 +20,18 @@ fi
 cp vendor/croc "$APP/Contents/Resources/bin/croc"
 cp vendor/LICENSE-croc "$APP/Contents/Resources/bin/LICENSE-croc" 2>/dev/null || true
 
+# ── Compagnon P2P (crocshare-core) + runtime Node embarqués ────
+# Le moteur expérimental P2P (Hyperswarm). Coexiste avec croc.
+if [[ ! -x runtime/node ]]; then
+    echo "⚠️  runtime/node manquant — lance ./fetch-runtime.sh d'abord"
+    exit 1
+fi
+mkdir -p "$APP/Contents/Resources/runtime" "$APP/Contents/Resources/core"
+cp runtime/node "$APP/Contents/Resources/runtime/node"
+cp core/*.js core/package.json core/package-lock.json "$APP/Contents/Resources/core/"
+# Dépendances de production uniquement (sans brittle/hyperdht de test).
+( cd "$APP/Contents/Resources/core" && npm ci --omit=dev --silent )
+
 # Sparkle.framework (récupéré via SPM) : embarqué dans le bundle + rpath,
 # sinon dyld ne le trouve pas au lancement.
 SPARKLE_XCFW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
@@ -128,6 +140,24 @@ fi
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_FW"
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/RiveRuntime.framework"
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/bin/croc"
+# Runtime Node + addons natifs du compagnon (.node) signés un par un.
+# Node a besoin d'entitlements JIT (V8) et de pouvoir charger des addons .node
+# sous le hardened runtime, sinon il crashe au lancement.
+NODE_ENT="$(mktemp /tmp/crocshare-node-XXXX.entitlements)"
+cat > "$NODE_ENT" <<'ENT'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict></plist>
+ENT
+codesign --force --options runtime --timestamp --entitlements "$NODE_ENT" \
+    --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/runtime/node"
+find "$APP/Contents/Resources/core" -name "*.node" -print0 | while IFS= read -r -d '' n; do
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$n"
+done
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 
 echo "✅ $APP construit. Lance-le avec : open $APP"

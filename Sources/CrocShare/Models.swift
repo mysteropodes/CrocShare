@@ -157,6 +157,8 @@ struct AppConfig: Codable {
     /// Héberger le relai croc directement sur ce Mac (l'app utilise alors 127.0.0.1:9009,
     /// les contacts saisissent l'IP publique de ce Mac dans leur relai personnalisé).
     var hostRelay: Bool? = false
+    /// Moteur expérimental P2P (Hyperswarm) — coexiste avec croc, masqué par défaut.
+    var experimentalP2P: Bool? = false
 }
 
 func formatBytes(_ bytes: Int64) -> String {
