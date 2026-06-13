@@ -3,6 +3,37 @@ import AppKit
 import AVKit
 import UniformTypeIdentifiers
 
+enum MainTab: Hashable { case chat, files, config }
+
+/// Barre d'onglets principale (haut de la colonne gauche), façon app moderne.
+struct MainTabBar: View {
+    @Binding var selected: MainTab
+    var body: some View {
+        HStack(spacing: 6) {
+            tab(.chat, "Chat", "bubble.left.and.bubble.right")
+            tab(.files, "Fichiers", "folder")
+            tab(.config, "Config", "gearshape")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    @ViewBuilder private func tab(_ t: MainTab, _ label: String, _ icon: String) -> some View {
+        let on = selected == t
+        Button { selected = t } label: {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                Text(label)
+            }
+            .font(.callout.weight(on ? .semibold : .regular))
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 7)
+                .fill(on ? Color.accentColor.opacity(0.18) : Color.clear))
+            .foregroundStyle(on ? Color.accentColor : Color.primary)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 struct ContentView: View {
     /// Pseudo-sélection pour la conversation de groupe.
     static let broadcastID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -10,14 +41,17 @@ struct ContentView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var pairing: PairingService
     @State private var selection: UUID?
+    @State private var mainTab: MainTab = .chat
     @State private var showPairingSheet = false
-    @State private var showSettings = false
     @State private var showNewChannel = false
     @State private var showNewRoom = false
     @State private var newChannelRoom: Room?
 
     var body: some View {
         NavigationSplitView {
+            VStack(spacing: 0) {
+            MainTabBar(selected: $mainTab)
+            Divider()
             List(selection: $selection) {
                 if !store.contacts.isEmpty {
                     Section("Groupe") {
@@ -86,35 +120,20 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 230)
+            }
+            .navigationSplitViewColumnWidth(min: 210, ideal: 240)
             .toolbar {
                 ToolbarItem {
                     Button { showPairingSheet = true } label: {
                         Label("Ajouter un contact", systemImage: "person.badge.plus")
                     }
                 }
-                ToolbarItem {
-                    Button { showSettings = true } label: {
-                        Label("Réglages", systemImage: "gearshape")
-                    }
-                }
             }
         } detail: {
-            if selection == Self.broadcastID {
-                GroupChatView()
-            } else if let id = selection, let channel = store.channels.first(where: { $0.id == id }) {
-                ChannelChatView(channel: channel)
-            } else if let id = selection, let contact = store.contacts.first(where: { $0.id == id }) {
-                ContactDetailView(contact: contact)
-            } else {
-                WelcomeView(showPairingSheet: $showPairingSheet, showSettings: $showSettings)
-            }
+            detailContent
         }
         .sheet(isPresented: $showPairingSheet, onDismiss: { pairing.cancel() }) {
             PairingSheet()
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsSheet()
         }
         .sheet(isPresented: $showNewChannel) {
             NewChannelSheet(room: newChannelRoom)
@@ -122,7 +141,47 @@ struct ContentView: View {
         .sheet(isPresented: $showNewRoom) {
             NewRoomSheet()
         }
-        .frame(minWidth: 760, minHeight: 480)
+        .frame(minWidth: 820, minHeight: 520)
+    }
+
+    /// Contenu de droite selon l'onglet principal et la sélection latérale.
+    @ViewBuilder
+    private var detailContent: some View {
+        switch mainTab {
+        case .config:
+            ConfigTab()
+        case .chat:
+            if selection == Self.broadcastID {
+                GroupChatView()
+            } else if let id = selection, let channel = store.channels.first(where: { $0.id == id }) {
+                ChannelChatView(channel: channel)
+            } else if let id = selection, let contact = store.contacts.first(where: { $0.id == id }) {
+                ConversationView(contact: contact)
+            } else {
+                WelcomeView(showPairingSheet: $showPairingSheet, openConfig: { mainTab = .config })
+            }
+        case .files:
+            if let id = selection, let contact = store.contacts.first(where: { $0.id == id }) {
+                ContactFilesView(contact: contact)
+            } else {
+                ContentPlaceholder(icon: "folder",
+                                   text: "Sélectionne un contact à gauche pour voir et télécharger ses fichiers.")
+            }
+        }
+    }
+}
+
+/// Message centré quand la zone de détail n'a rien à afficher.
+struct ContentPlaceholder: View {
+    let icon: String
+    let text: String
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 40)).foregroundStyle(.secondary)
+            Text(text).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -207,7 +266,7 @@ struct UnreadBadge: View {
 struct WelcomeView: View {
     @EnvironmentObject var store: AppStore
     @Binding var showPairingSheet: Bool
-    @Binding var showSettings: Bool
+    var openConfig: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
@@ -225,7 +284,7 @@ struct WelcomeView: View {
                     .foregroundStyle(.orange)
             }
             if store.config.sharedFolder == nil {
-                Button("1. Choisir mon dossier partagé…") { showSettings = true }
+                Button("1. Choisir mon dossier partagé…") { openConfig() }
                     .buttonStyle(.borderedProminent)
             }
             Button(store.config.sharedFolder == nil ? "2. Ajouter un contact…" : "Ajouter un contact…") {
@@ -236,10 +295,41 @@ struct WelcomeView: View {
     }
 }
 
-struct ContactDetailView: View {
+/// En-tête commun d'une conversation / vue fichiers : avatar + nom + présence.
+struct ContactHeader: View {
     @EnvironmentObject var store: AppStore
     let contact: Contact
-    @State private var tab = 0
+    var body: some View {
+        HStack(spacing: 10) {
+            AvatarView(name: contact.name, id: contact.id, size: 30)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(contact.name).font(.headline)
+                Text(store.isOnline(contact) ? "en ligne" : "hors ligne")
+                    .font(.caption)
+                    .foregroundStyle(store.isOnline(contact) ? Color.green : .secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal).padding(.vertical, 10)
+    }
+}
+
+/// Onglet Chat pour un contact : en-tête + conversation.
+struct ConversationView: View {
+    let contact: Contact
+    var body: some View {
+        VStack(spacing: 0) {
+            ContactHeader(contact: contact)
+            Divider()
+            ChatView(contact: contact)
+        }
+    }
+}
+
+/// Onglet Fichiers pour un contact : en-tête + arborescence du dossier partagé.
+struct ContactFilesView: View {
+    @EnvironmentObject var store: AppStore
+    let contact: Contact
 
     var manifest: Manifest? { store.manifests[contact.id] }
     var pendings: [PendingDownload] {
@@ -255,30 +345,9 @@ struct ContactDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Circle()
-                    .fill(store.isOnline(contact) ? Color.green : Color.gray.opacity(0.5))
-                    .frame(width: 10, height: 10)
-                Text(contact.name).font(.title2.bold())
-                Text(store.isOnline(contact) ? "en ligne" : "hors ligne")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Picker("", selection: $tab) {
-                    Text("Fichiers").tag(0)
-                    Text("Chat").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-            }
-            .padding()
-
+            ContactHeader(contact: contact)
             Divider()
-
-            if tab == 1 {
-                ChatView(contact: contact)
-            } else {
-                filesView
-            }
+            filesView
         }
     }
 
@@ -1015,12 +1084,16 @@ struct ChatComposer: View {
             HStack(alignment: .bottom) {
                 TextField(placeholder, text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
-                    .lineLimit(expanded ? 14...14 : 1...5)
+                    .font(.body)
+                    .lineLimit(expanded ? 18...18 : 3...12)
+                    .frame(minHeight: expanded ? 320 : 64, alignment: .top)
                     .focused($focused)
                     .onSubmit(send)
                 Button(action: send) {
-                    Image(systemName: "paperplane.fill")
+                    Image(systemName: "paperplane.fill").font(.title3)
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(draft.trimmingCharacters(in: .whitespaces).isEmpty ? .secondary : Color.accentColor)
                 .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
@@ -1302,10 +1375,21 @@ struct PairingSheet: View {
 
 // MARK: - Réglages
 
-struct SettingsSheet: View {
+/// Onglet Config : les réglages affichés en place (plus de fenêtre modale).
+struct ConfigTab: View {
+    var body: some View {
+        ScrollView {
+            SettingsContent()
+                .frame(maxWidth: 600, alignment: .leading)
+                .padding(.vertical, 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+struct SettingsContent: View {
     @EnvironmentObject var store: AppStore
     @ObservedObject var relay = RelayServer.shared
-    @Environment(\.dismiss) var dismiss
     @State private var showLog = false
 
     var body: some View {
@@ -1410,13 +1494,9 @@ struct SettingsSheet: View {
             Text("Contact « Démo » simulé localement : toujours en ligne, répond aux messages, fichiers téléchargeables (générés sur place). Aucun transfert croc réel.")
                 .font(.caption).foregroundStyle(.secondary)
 
-            HStack {
-                Spacer()
-                Button("Fermer") { dismiss() }.buttonStyle(.borderedProminent)
-            }
         }
         .padding(28)
-        .frame(width: 520)
+        .frame(maxWidth: 600, alignment: .leading)
         .sheet(isPresented: $showLog) { SyncLogSheet() }
     }
 
