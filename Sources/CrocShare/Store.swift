@@ -54,9 +54,14 @@ final class AppStore: ObservableObject {
         if syncLog.count > 300 { syncLog.removeFirst(syncLog.count - 300) }
     }
 
+    /// Dossier de support, isolé pour le build « Lab » (test P2P) afin de ne
+    /// jamais toucher aux données de l'app de production.
+    static let appFolderName: String =
+        (Bundle.main.bundleIdentifier ?? "").contains("lab") ? "CrocShare-Lab" : "CrocShare"
+
     static let supportDir: URL = {
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CrocShare")
+            .appendingPathComponent(appFolderName)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()

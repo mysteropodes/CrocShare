@@ -1,0 +1,22 @@
+{
+  "name": "crocshare-core",
+  "version": "0.1.0",
+  "description": "CrocShare P2P companion (Hyperswarm/Hypercore) — Phase 1",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "test": "brittle test/*.test.js"
+  },
+  "dependencies": {
+    "b4a": "^1.6.6",
+    "compact-encoding": "^2.15.0",
+    "corestore": "^6.18.4",
+    "hypercore-crypto": "^3.4.2",
+    "hyperswarm": "^4.8.4",
+    "z32": "^1.1.0"
+  },
+  "devDependencies": {
+    "brittle": "^3.7.0",
+    "hyperdht": "^6.15.1"
+  }
+}

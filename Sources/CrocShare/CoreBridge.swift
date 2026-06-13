@@ -55,8 +55,9 @@ enum CorePaths {
 
     static var storagePath: String {
         // Calcul indépendant du MainActor (CoreBridge est un actor non isolé MainActor).
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CrocShare/core").path
+        let folder = (Bundle.main.bundleIdentifier ?? "").contains("lab") ? "CrocShare-Lab" : "CrocShare"
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("\(folder)/core").path
     }
 
     static var logFile: URL {

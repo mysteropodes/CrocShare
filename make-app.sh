@@ -5,7 +5,13 @@ cd "$(dirname "$0")"
 
 swift build -c release
 
-APP="CrocShare.app"
+# LAB=1 → build de test « CrocShare Lab » (id/nom/stockage distincts, sans
+# auto-update Sparkle) qui coexiste avec l'app de production.
+if [[ "$LAB" == "1" ]]; then
+    APP="CrocShare Lab.app"; BUNDLE_ID="com.crocshare.lab"; DISPLAY_NAME="CrocShare Lab"
+else
+    APP="CrocShare.app"; BUNDLE_ID="com.crocshare.app"; DISPLAY_NAME="CrocShare"
+fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources/bin"
 
@@ -119,7 +125,21 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Identité du bundle (prod ou Lab).
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $DISPLAY_NAME" "$APP/Contents/Info.plist"
+if [[ "$LAB" == "1" ]]; then
+    # Pas d'auto-update Sparkle pour le test (sinon il s'écraserait avec la prod).
+    /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$APP/Contents/Info.plist" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Delete :SUEnableAutomaticChecks" "$APP/Contents/Info.plist" 2>/dev/null || true
+fi
+
 # ── Signature ─────────────────────────────────────────────────
+if [[ "$LAB" == "1" ]]; then
+    # Build de test : signature ad-hoc (aucun accès Trousseau requis), sans
+    # hardened runtime → Node/JIT + addons .node tournent ; pas d'auto-update.
+    codesign --force --deep --sign - "$APP"
+else
 # Certificat Apple Development (même que RecentDrop) : signature stable entre
 # les builds — indispensable pour Sparkle (l'updater refuse une identité qui
 # change) et pour le trousseau/pare-feu. Composants Sparkle signés un par un
@@ -159,5 +179,6 @@ find "$APP/Contents/Resources/core" -name "*.node" -print0 | while IFS= read -r 
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$n"
 done
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+fi
 
 echo "✅ $APP construit. Lance-le avec : open $APP"
