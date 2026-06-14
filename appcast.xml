@@ -4,12 +4,12 @@
     <title>CrocShare</title>
     <link>https://raw.githubusercontent.com/mysteropodes/CrocShare/main/appcast.xml</link>
     <item>
-      <title>Version 2.4.3</title>
-      <sparkle:version>18</sparkle:version>
-      <sparkle:shortVersionString>2.4.3</sparkle:shortVersionString>
+      <title>Version 2.4.4</title>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>2.4.4</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <pubDate>Sat, 13 Jun 2026 23:15:34 +0200</pubDate>
-      <enclosure url="https://github.com/mysteropodes/CrocShare/releases/download/v2.4.3/CrocShare-2.4.3.zip" sparkle:edSignature="etvPGy0MTLXKU7yF2HHEXCWsYFVwbUmF/LK5tUfK6gAm7IVxC0mTKfuGlQbpNQXyIhhbg03wbCmF5vu0JgU2Bw==" length="115367618" type="application/octet-stream"/>
+      <pubDate>Sun, 14 Jun 2026 11:53:22 +0200</pubDate>
+      <enclosure url="https://github.com/mysteropodes/CrocShare/releases/download/v2.4.4/CrocShare-2.4.4.zip" sparkle:edSignature="mGm2hi3cijNp2UJieUlngDRdGmOexZ1sNwMj63ZMc9UyEdS9CplR+4T10+uLeNEL8ECBpZX/xz8D5p2sWiJKBA==" length="115543657" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>

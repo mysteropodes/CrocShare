@@ -6,8 +6,8 @@
 set -e
 cd "$(dirname "$0")"
 
-VERSION="2.4.3"        # version visible — incrémenter à chaque release
-BUILD_NUMBER="18"    # +1 à chaque release
+VERSION="2.4.4"        # version visible — incrémenter à chaque release
+BUILD_NUMBER="19"    # +1 à chaque release
 
 PRODUCT="CrocShare"
 DIST="dist"
