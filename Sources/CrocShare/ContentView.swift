@@ -3,154 +3,214 @@ import AppKit
 import AVKit
 import UniformTypeIdentifiers
 
-enum MainTab: Hashable { case chat, files, config }
-
-/// Barre d'onglets principale (haut de la colonne gauche), façon app moderne.
-struct MainTabBar: View {
-    @Binding var selected: MainTab
-    var body: some View {
-        HStack(spacing: 6) {
-            tab(.chat, "Chat", "bubble.left.and.bubble.right")
-            tab(.files, "Fichiers", "folder")
-            tab(.config, "Config", "gearshape")
-        }
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    @ViewBuilder private func tab(_ t: MainTab, _ label: String, _ icon: String) -> some View {
-        let on = selected == t
-        Button { selected = t } label: {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                Text(label)
-            }
-            .font(.callout.weight(on ? .semibold : .regular))
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 7)
-                .fill(on ? Color.accentColor.opacity(0.18) : Color.clear))
-            .foregroundStyle(on ? Color.accentColor : Color.primary)
-        }
-        .buttonStyle(.plain)
-    }
+// Route de navigation (sidebar verticale unifiée — fini les onglets du haut).
+enum Route: Hashable {
+    case myFiles
+    case contact(String)
+    case channel(UUID)
+    case settings
 }
+enum ContactPane: Hashable { case chat, files }
 
 struct ContentView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var p2p: P2PEngine
-    @State private var selection: String?          // clé P2P du contact, ou "chan:<uuid>"
-    @State private var mainTab: MainTab = .chat
+    @State private var route: Route? = .myFiles
+    @State private var contactPane: ContactPane = .chat
+    @State private var showInfo = true
+    @State private var threadRoot: P2PEngine.P2PMessage?
     @State private var showPairing = false
     @State private var showNewChannel = false
-    @State private var showInfo = true
-
-    private var selectedChannel: P2PEngine.P2PChannel? {
-        guard let s = selection, s.hasPrefix("chan:"), let id = UUID(uuidString: String(s.dropFirst(5)))
-        else { return nil }
-        return p2p.channels.first { $0.id == id }
-    }
 
     var body: some View {
         NavigationSplitView {
-            VStack(spacing: 0) {
-                MainTabBar(selected: $mainTab)
-                Divider()
-                List(selection: $selection) {
-                    Section("Contacts") {
-                        ForEach(p2p.contacts, id: \.self) { key in
-                            P2PContactRow(contactKey: key)
-                                .tag(key)
-                                .contextMenu {
-                                    Button("Supprimer le contact", role: .destructive) {
-                                        p2p.removeContact(key)
-                                        if selection == key { selection = nil }
-                                    }
-                                }
-                        }
-                        if p2p.contacts.isEmpty {
-                            Text("Aucun contact").foregroundStyle(.secondary).font(.caption)
-                        }
-                    }
-                    Section("Salons") {
-                        ForEach(p2p.channels) { chan in
-                            HStack {
-                                Label(chan.name, systemImage: "number")
-                                Spacer()
-                                UnreadBadge(count: p2p.channelUnread[chan.id] ?? 0)
-                            }
-                            .tag("chan:\(chan.id.uuidString)")
-                            .contextMenu {
-                                Button("Supprimer le salon", role: .destructive) {
-                                    p2p.removeChannel(chan.id)
-                                }
-                            }
-                        }
-                        Button { showNewChannel = true } label: {
-                            Label("Nouveau salon…", systemImage: "plus.circle")
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(p2p.contacts.isEmpty)
-                    }
-                }
-                .listStyle(.sidebar)
-            }
-            .navigationSplitViewColumnWidth(min: 220, ideal: 250)
-            .toolbar {
-                ToolbarItem {
-                    Button { showPairing = true } label: {
-                        Label("Ajouter un contact", systemImage: "person.badge.plus")
-                    }
-                }
-            }
+            UnifiedSidebar(route: $route, showPairing: $showPairing, showNewChannel: $showNewChannel)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 258)
         } detail: {
             HStack(spacing: 0) {
-                detailContent.frame(maxWidth: .infinity, maxHeight: .infinity)
-                if showInfo, let key = selection, p2p.contacts.contains(key), selectedChannel == nil {
-                    Divider()
-                    ProfilePanel(contactKey: key, openTab: { mainTab = $0 })
-                        .frame(width: 300)
-                }
+                mainContent.frame(maxWidth: .infinity, maxHeight: .infinity)
+                rightPanel
             }
-            .toolbar {
-                if let key = selection, p2p.contacts.contains(key), selectedChannel == nil {
-                    ToolbarItem {
-                        Button { withAnimation(.easeInOut(duration: 0.22)) { showInfo.toggle() } } label: {
-                            Image(systemName: showInfo ? "sidebar.trailing" : "sidebar.right")
-                        }
-                        .help("Panneau d'infos du contact")
-                    }
-                }
-            }
+            .toolbar { toolbarContent }
         }
         .sheet(isPresented: $showPairing) { P2PPairingSheet() }
         .sheet(isPresented: $showNewChannel) { P2PChannelSheet(existing: nil) }
-        .frame(minWidth: 900, minHeight: 560)
+        .frame(minWidth: 980, minHeight: 600)
+        .onChange(of: route) { _ in threadRoot = nil; contactPane = .chat }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if case .contact(let key)? = route, p2p.contacts.contains(key) {
+            ToolbarItem {
+                Picker("", selection: $contactPane) {
+                    Image(systemName: "bubble.left").tag(ContactPane.chat)
+                    Image(systemName: "folder").tag(ContactPane.files)
+                }
+                .pickerStyle(.segmented)
+            }
+            ToolbarItem {
+                Button { withAnimation(.easeInOut(duration: 0.2)) { showInfo.toggle() } } label: {
+                    Image(systemName: showInfo ? "sidebar.trailing" : "sidebar.right")
+                }.help("Panneau d'infos")
+            }
+        }
     }
 
     @ViewBuilder
-    private var detailContent: some View {
-        switch mainTab {
-        case .config:
+    private var mainContent: some View {
+        switch route {
+        case .myFiles:
+            MyFilesView()
+        case .settings:
             ConfigTab()
-        case .chat:
-            if let chan = selectedChannel {
-                P2PChannelView(channel: chan)
-            } else if let key = selection, p2p.contacts.contains(key) {
-                P2PChatView(contactKey: key)
-            } else {
-                WelcomeP2P(showPairing: $showPairing, openConfig: { mainTab = .config })
-            }
-        case .files:
-            if let key = selection, p2p.contacts.contains(key) {
-                P2PFilesView(contactKey: key)
-            } else {
-                ContentPlaceholder(icon: "folder",
-                                   text: "Sélectionne un contact à gauche pour voir et télécharger ses fichiers.")
-            }
+        case .channel(let id):
+            if let ch = p2p.channels.first(where: { $0.id == id }) {
+                P2PChannelView(channel: ch, onOpenThread: { threadRoot = $0 })
+            } else { welcome }
+        case .contact(let key):
+            if p2p.contacts.contains(key) {
+                if contactPane == .chat {
+                    P2PChatView(contactKey: key, onOpenThread: { threadRoot = $0 })
+                } else {
+                    P2PFilesView(contactKey: key)
+                }
+            } else { welcome }
+        case nil:
+            welcome
+        }
+    }
+
+    private var welcome: some View {
+        WelcomeP2P(showPairing: $showPairing, openConfig: { route = .settings })
+    }
+
+    @ViewBuilder
+    private var rightPanel: some View {
+        if let root = threadRoot {
+            Divider()
+            ThreadPanel(root: root, scope: route, onClose: { threadRoot = nil })
+                .frame(width: 340)
+        } else if showInfo, case .contact(let key)? = route, p2p.contacts.contains(key) {
+            Divider()
+            ProfilePanel(contactKey: key, openFiles: { contactPane = .files })
+                .frame(width: 300)
         }
     }
 }
 
-/// Ligne de contact P2P : avatar + présence + nom + non-lus.
+/// Sidebar verticale unifiée (style Slack/Discord) : Mes fichiers, Salons,
+/// Messages directs, Réglages — tout dans un seul panneau scrollable.
+struct UnifiedSidebar: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @Binding var route: Route?
+    @Binding var showPairing: Bool
+    @Binding var showNewChannel: Bool
+    @State private var showChannels = true
+    @State private var showContacts = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Theme.Space.sm) {
+                RoundedRectangle(cornerRadius: 7).fill(Theme.accent)
+                    .frame(width: 30, height: 30)
+                    .overlay(Image(systemName: "bolt.horizontal.fill").foregroundStyle(.white).font(.caption))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("CrocShare").font(Theme.body.weight(.semibold)).foregroundStyle(Theme.textPrimary)
+                    Text("P2P chiffré").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, Theme.Space.md).padding(.vertical, Theme.Space.md)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    navItem(title: "Mes fichiers partagés", icon: "folder.fill",
+                            active: route == .myFiles) { route = .myFiles }
+
+                    sectionHeader("SALONS", expanded: $showChannels) { showNewChannel = true }
+                    if showChannels {
+                        ForEach(p2p.channels) { chan in
+                            navItem(title: chan.name, icon: "number", active: route == .channel(chan.id),
+                                    badge: p2p.channelUnread[chan.id] ?? 0) { route = .channel(chan.id) }
+                                .contextMenu { Button("Supprimer le salon", role: .destructive) { p2p.removeChannel(chan.id) } }
+                        }
+                        if p2p.channels.isEmpty { emptyHint("Aucun salon") }
+                    }
+
+                    sectionHeader("MESSAGES DIRECTS", expanded: $showContacts) { showPairing = true }
+                    if showContacts {
+                        ForEach(p2p.contacts, id: \.self) { key in contactItem(key) }
+                        if p2p.contacts.isEmpty { emptyHint("Aucun contact") }
+                    }
+                }
+                .padding(.horizontal, Theme.Space.sm).padding(.vertical, Theme.Space.sm)
+            }
+
+            Divider()
+            VStack(spacing: 1) {
+                navItem(title: "Réglages", icon: "gearshape", active: route == .settings) { route = .settings }
+            }
+            .padding(.horizontal, Theme.Space.sm).padding(.vertical, Theme.Space.sm)
+        }
+        .background(Theme.surface)
+    }
+
+    private func navItem(title: String, icon: String, active: Bool, badge: Int = 0, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: Theme.Space.sm) {
+                RoundedRectangle(cornerRadius: 2).fill(active ? Theme.accent : .clear).frame(width: 3, height: 16)
+                Image(systemName: icon).frame(width: 18).foregroundStyle(active ? Theme.accent : Theme.textSecondary)
+                Text(title).font(Theme.body).foregroundStyle(active ? Theme.accent : Theme.textPrimary).lineLimit(1)
+                Spacer()
+                if badge > 0 { UnreadBadge(count: badge) }
+            }
+            .padding(.vertical, 5).padding(.trailing, 6)
+            .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(active ? Theme.selected : .clear))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func contactItem(_ key: String) -> some View {
+        let active = route == .contact(key)
+        return Button { route = .contact(key) } label: {
+            HStack(spacing: Theme.Space.sm) {
+                RoundedRectangle(cornerRadius: 2).fill(active ? Theme.accent : .clear).frame(width: 3, height: 18)
+                AvatarView(name: p2p.name(for: key), id: P2PEngine.uuid(forKey: key), size: 22)
+                    .overlay(alignment: .bottomTrailing) { PresenceDot(online: p2p.isOnline(key), size: 8).offset(x: 1, y: 1) }
+                Text(p2p.name(for: key)).font(Theme.body).foregroundStyle(active ? Theme.accent : Theme.textPrimary).lineLimit(1)
+                Spacer()
+                UnreadBadge(count: p2p.unread[key] ?? 0)
+            }
+            .padding(.vertical, 4).padding(.trailing, 6)
+            .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(active ? Theme.selected : .clear))
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Supprimer le contact", role: .destructive) {
+                p2p.removeContact(key); if route == .contact(key) { route = .myFiles }
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String, expanded: Binding<Bool>, add: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            Button { withAnimation(.easeInOut(duration: 0.2)) { expanded.wrappedValue.toggle() } } label: {
+                Image(systemName: expanded.wrappedValue ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .bold))
+                Text(title).font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+            }.buttonStyle(.plain)
+            Spacer()
+            Button(action: add) { Image(systemName: "plus").font(.system(size: 10, weight: .bold)) }
+                .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+        }
+        .padding(.horizontal, 6).padding(.top, Theme.Space.md).padding(.bottom, 2)
+    }
+
+    private func emptyHint(_ t: String) -> some View {
+        Text(t).font(Theme.small).foregroundStyle(Theme.textSecondary).padding(.horizontal, 8).padding(.vertical, 4)
+    }
+}
 struct P2PContactRow: View {
     @EnvironmentObject var p2p: P2PEngine
     let contactKey: String
@@ -317,13 +377,11 @@ struct P2PComposerBar: View {
 struct P2PChatView: View {
     @EnvironmentObject var p2p: P2PEngine
     let contactKey: String
-    @State private var draft = ""
-    @State private var threadRoot: P2PEngine.P2PMessage?
+    var onOpenThread: (P2PEngine.P2PMessage) -> Void
 
-    var allMessages: [P2PEngine.P2PMessage] {
+    var messages: [P2PEngine.P2PMessage] {
         (p2p.chats[contactKey] ?? []).filter { $0.channel == nil }.sorted { $0.date < $1.date }
     }
-    var messages: [P2PEngine.P2PMessage] { allMessages }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -332,9 +390,8 @@ struct P2PChatView: View {
                                   avatarID: P2PEngine.uuid(forKey: contactKey),
                                   subtitle: p2p.isOnline(contactKey) ? "en ligne · chiffré P2P" : "hors ligne")
             Divider()
-
             P2PTranscript(messages: messages, contactKey: contactKey,
-                          targets: [contactKey], onOpenThread: { threadRoot = $0 })
+                          targets: [contactKey], onOpenThread: onOpenThread)
             Divider()
             P2PComposerBar(placeholder: "Message P2P à \(p2p.name(for: contactKey))…",
                            scope: p2p.name(for: contactKey),
@@ -347,12 +404,6 @@ struct P2PChatView: View {
         }
         .background(Theme.bgApp)
         .fileDropZone(scope: p2p.name(for: contactKey)) { p2p.send("", attachment: $0, to: contactKey) }
-        .sheet(item: $threadRoot) { root in
-            P2PThreadSheet(root: root, replies: allMessages.filter { $0.replyTo == root.id },
-                           targets: [contactKey], scope: p2p.name(for: contactKey),
-                           onSend: { p2p.send($0, to: contactKey, replyTo: root.id) },
-                           onAttach: { p2p.send("", attachment: $0, to: contactKey, replyTo: root.id) })
-        }
         .onAppear { p2p.markRead(contactKey) }
         .onChange(of: messages.count) { _ in p2p.markRead(contactKey) }
     }
@@ -438,57 +489,240 @@ struct P2PTranscript: View {
 }
 
 /// Onglet Fichiers d'un contact P2P : liste des fichiers partagés + téléchargement.
+enum FileStatus { case mine, downloaded, waiting, transferring, remote }
+
+/// Fichiers d'un contact (téléchargeables à la demande, liste persistée hors-ligne).
 struct P2PFilesView: View {
     @EnvironmentObject var p2p: P2PEngine
     @EnvironmentObject var store: AppStore
     let contactKey: String
 
-    var files: [RemoteFile] { (p2p.remoteFiles[contactKey] ?? []).sorted { $0.path < $1.path } }
-    var pendings: [P2PEngine.P2PDownload] {
-        p2p.fileDownloads.filter { $0.contactKey == contactKey }
+    var files: [RemoteFile] { p2p.remoteFiles[contactKey] ?? [] }
+
+    func status(_ f: RemoteFile) -> FileStatus {
+        if p2p.isDownloaded(f.path, from: contactKey) { return .downloaded }
+        if let d = p2p.fileDownloads.first(where: { $0.contactKey == contactKey && $0.relPath == f.path }) {
+            switch d.status { case .transferring: return .transferring
+            case .waiting: return .waiting; default: break }
+        }
+        return .remote
+    }
+    func localURL(_ f: RemoteFile) -> URL? {
+        store.mirrorRootURL.appendingPathComponent(p2p.name(for: contactKey)).appendingPathComponent(f.path)
+    }
+
+    var body: some View {
+        FilesBrowser(
+            title: "Fichiers de \(p2p.name(for: contactKey))",
+            subtitle: p2p.isOnline(contactKey) ? "en ligne" : "hors ligne — liste enregistrée",
+            online: p2p.isOnline(contactKey),
+            files: files, ownerName: p2p.name(for: contactKey), ownerID: P2PEngine.uuid(forKey: contactKey),
+            statusFor: status, localURLFor: localURL,
+            onPrimary: { f in
+                if p2p.isDownloaded(f.path, from: contactKey) {
+                    if let u = localURL(f) { NSWorkspace.shared.activateFileViewerSelecting([u]) }
+                } else { p2p.downloadFile(f, from: contactKey) }
+            },
+            headerTrailing: files.isEmpty ? nil : AnyView(
+                Button("Tout télécharger") { for f in files { p2p.downloadFile(f, from: contactKey) } }.font(Theme.small)
+            ))
+        .onAppear { p2p.configure(sharedFolder: store.config.sharedFolder, downloadBase: store.mirrorRootURL.path) }
+    }
+}
+
+/// Mes fichiers partagés (contenu de mon dossier partagé).
+struct MyFilesView: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @EnvironmentObject var store: AppStore
+
+    var files: [RemoteFile] { p2p.myFiles() }
+    func localURL(_ f: RemoteFile) -> URL? {
+        store.config.sharedFolder.map { URL(fileURLWithPath: $0).appendingPathComponent(f.path) }
+    }
+
+    var body: some View {
+        Group {
+            if store.config.sharedFolder == nil {
+                ContentPlaceholder(icon: "folder.badge.plus",
+                                   text: "Choisis ton dossier partagé dans Réglages pour partager des fichiers.")
+            } else {
+                FilesBrowser(
+                    title: "Mes fichiers partagés", subtitle: "visibles par tous tes contacts",
+                    online: true, files: files,
+                    ownerName: p2p.myName.isEmpty ? "Moi" : p2p.myName,
+                    ownerID: P2PEngine.uuid(forKey: p2p.myPublicKey),
+                    statusFor: { _ in .mine }, localURLFor: localURL,
+                    onPrimary: { f in if let u = localURL(f) { NSWorkspace.shared.activateFileViewerSelecting([u]) } },
+                    headerTrailing: store.config.sharedFolder.map { p in AnyView(
+                        Button("Ouvrir le dossier") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }.font(Theme.small)
+                    )})
+            }
+        }
+        .onAppear { p2p.configure(sharedFolder: store.config.sharedFolder, downloadBase: store.mirrorRootURL.path) }
+    }
+}
+
+/// Navigateur de fichiers réutilisable : barre (titre, compteur, recherche,
+/// bascule liste/grille) + grille de cartes OU liste, avec vignettes et métadonnées.
+struct FilesBrowser: View {
+    let title: String
+    var subtitle: String = ""
+    var online: Bool = true
+    let files: [RemoteFile]
+    let ownerName: String
+    let ownerID: UUID
+    var statusFor: (RemoteFile) -> FileStatus
+    var localURLFor: (RemoteFile) -> URL?
+    var onPrimary: (RemoteFile) -> Void
+    var headerTrailing: AnyView? = nil
+    @State private var grid = true
+    @State private var search = ""
+
+    var filtered: [RemoteFile] {
+        let f = files.sorted { $0.path < $1.path }
+        return search.isEmpty ? f : f.filter { $0.name.localizedCaseInsensitiveContains(search) }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                AvatarView(name: p2p.name(for: contactKey),
-                           id: P2PEngine.uuid(forKey: contactKey), size: 30)
+            HStack(spacing: Theme.Space.md) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(p2p.name(for: contactKey)).font(.headline)
-                    Text(p2p.isOnline(contactKey) ? "en ligne · P2P" : "hors ligne")
-                        .font(.caption)
-                        .foregroundStyle(p2p.isOnline(contactKey) ? Color.green : .secondary)
+                    Text(title).font(Theme.h2).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    if !subtitle.isEmpty {
+                        Text(subtitle).font(Theme.small)
+                            .foregroundStyle(online ? Theme.textSecondary : Theme.away)
+                    }
                 }
+                Text("\(filtered.count)").font(Theme.small).foregroundStyle(Theme.textSecondary)
+                    .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(Theme.surfaceAlt))
                 Spacer()
-                if p2p.isOnline(contactKey), !files.isEmpty {
-                    Button("Tout télécharger") {
-                        for f in files { p2p.downloadFile(f, from: contactKey) }
-                    }.font(.caption)
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(Theme.textSecondary)
+                    TextField("Rechercher", text: $search).textFieldStyle(.plain).frame(width: 130)
                 }
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(Theme.surfaceAlt))
+                Picker("", selection: $grid) {
+                    Image(systemName: "square.grid.2x2").tag(true)
+                    Image(systemName: "list.bullet").tag(false)
+                }.pickerStyle(.segmented).frame(width: 76)
+                if let headerTrailing { headerTrailing }
             }
-            .padding(.horizontal).padding(.vertical, 10)
+            .padding(.horizontal, Theme.Space.lg).padding(.vertical, Theme.Space.md)
+            .background(Theme.surface)
             Divider()
 
-            if files.isEmpty {
-                ContentPlaceholder(icon: p2p.isOnline(contactKey) ? "tray" : "wifi.slash",
-                    text: p2p.isOnline(contactKey)
-                        ? "Aucun fichier partagé pour le moment."
-                        : "Hors ligne — la liste apparaîtra à la connexion.")
+            if filtered.isEmpty {
+                ContentPlaceholder(icon: online ? "tray" : "wifi.slash",
+                    text: search.isEmpty ? (online ? "Aucun fichier." : "Hors ligne — la liste apparaîtra à la connexion.")
+                                          : "Aucun résultat pour « \(search) ».")
+            } else if grid {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 158, maximum: 210), spacing: 14)], spacing: 14) {
+                        ForEach(filtered) { f in
+                            FileItem(file: f, ownerName: ownerName, ownerID: ownerID, grid: true,
+                                     thumbURL: localURLFor(f), status: statusFor(f), onPrimary: { onPrimary(f) })
+                        }
+                    }.padding(Theme.Space.lg)
+                }
             } else {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 152, maximum: 210), spacing: 14)],
-                              spacing: 14) {
-                        ForEach(files) { file in
-                            P2PFileCard(file: file, contactKey: contactKey)
+                    LazyVStack(spacing: 0) {
+                        ForEach(filtered) { f in
+                            FileItem(file: f, ownerName: ownerName, ownerID: ownerID, grid: false,
+                                     thumbURL: localURLFor(f), status: statusFor(f), onPrimary: { onPrimary(f) })
+                            Divider().padding(.leading, 44)
                         }
-                    }
-                    .padding(Theme.Space.lg)
+                    }.padding(.horizontal, Theme.Space.sm).padding(.vertical, Theme.Space.xs)
                 }
-                .background(Theme.bgApp)
             }
         }
-        .onAppear {
-            p2p.configure(sharedFolder: store.config.sharedFolder, downloadBase: store.mirrorRootURL.path)
+        .background(Theme.bgApp)
+    }
+}
+
+/// Élément fichier (carte en grille ou ligne en liste) : vignette/icône, nom,
+/// taille, date de modif, avatar du propriétaire, état (téléchargé/à télécharger).
+struct FileItem: View {
+    let file: RemoteFile
+    let ownerName: String
+    let ownerID: UUID
+    let grid: Bool
+    let thumbURL: URL?
+    let status: FileStatus
+    var onPrimary: () -> Void
+
+    var ext: String { (file.path as NSString).pathExtension.lowercased() }
+    var isImage: Bool { ["png","jpg","jpeg","gif","heic","webp","tiff"].contains(ext) }
+    var local: Bool { status == .mine || status == .downloaded }
+    var thumbnail: NSImage? {
+        guard local, isImage, let u = thumbURL else { return nil }
+        return NSImage(contentsOf: u)
+    }
+    var iconName: String {
+        if isImage { return "photo" }
+        switch ext { case "mp4","mov","m4v": return "play.rectangle.fill"; case "pdf": return "doc.richtext.fill"
+        case "zip","rar","7z": return "doc.zipper"; case "riv": return "sparkles"; default: return "doc.fill" }
+    }
+    var iconColor: Color {
+        switch ext { case "mp4","mov","m4v": return .pink; case "pdf": return .red; case "riv": return .purple
+        case "zip","rar","7z": return .orange; default: return Theme.accent }
+    }
+
+    @ViewBuilder var statusBadge: some View {
+        switch status {
+        case .downloaded, .mine: Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.success)
+        case .transferring: ProgressView().controlSize(.small)
+        case .waiting: Image(systemName: "clock.fill").foregroundStyle(Theme.away)
+        case .remote: Image(systemName: "arrow.down.circle.fill").foregroundStyle(Theme.accent)
+        }
+    }
+
+    @ViewBuilder var preview: some View {
+        if let img = thumbnail {
+            Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+        } else {
+            Image(systemName: iconName).font(.system(size: grid ? 32 : 18)).foregroundStyle(iconColor)
+        }
+    }
+
+    var body: some View {
+        if grid {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack { RoundedRectangle(cornerRadius: 12).fill(Theme.surfaceAlt); preview }
+                    .frame(height: 104).clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(alignment: .topTrailing) {
+                        statusBadge.padding(6).background(Circle().fill(Theme.surface).opacity(0.9)).padding(6)
+                    }
+                Text(file.name).font(Theme.body.weight(.medium)).lineLimit(1).foregroundStyle(Theme.textPrimary)
+                HStack(spacing: 5) {
+                    AvatarView(name: ownerName, id: ownerID, size: 16)
+                    Text(file.mtime.formatted(date: .abbreviated, time: .omitted)).font(Theme.tiny)
+                    Spacer()
+                    Text(formatBytes(file.size)).font(Theme.tiny)
+                }.foregroundStyle(Theme.textSecondary)
+            }
+            .padding(8).card(radius: Theme.Radius.lg)
+            .contentShape(Rectangle()).onTapGesture { onPrimary() }
+            .help(local ? "Afficher dans le Finder" : "Télécharger")
+        } else {
+            HStack(spacing: Theme.Space.md) {
+                ZStack { RoundedRectangle(cornerRadius: 8).fill(Theme.surfaceAlt); preview }
+                    .frame(width: 34, height: 34).clipShape(RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(file.name).font(Theme.body).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text(file.path).font(Theme.tiny).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                }
+                Spacer()
+                AvatarView(name: ownerName, id: ownerID, size: 18)
+                Text(file.mtime.formatted(date: .numeric, time: .omitted)).font(Theme.small)
+                    .foregroundStyle(Theme.textSecondary).frame(width: 80, alignment: .trailing)
+                Text(formatBytes(file.size)).font(Theme.small).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 64, alignment: .trailing)
+                Button(action: onPrimary) { statusBadge }.buttonStyle(.plain).frame(width: 24)
+            }
+            .padding(.horizontal, Theme.Space.sm).padding(.vertical, 6)
+            .contentShape(Rectangle()).onTapGesture { onPrimary() }
         }
     }
 }
@@ -754,8 +988,8 @@ struct P2PAttachmentView: View {
 struct P2PChannelView: View {
     @EnvironmentObject var p2p: P2PEngine
     let channel: P2PEngine.P2PChannel
+    var onOpenThread: (P2PEngine.P2PMessage) -> Void
     @State private var showMembers = false
-    @State private var threadRoot: P2PEngine.P2PMessage?
 
     var members: [String] { channel.memberKeys }
     var messages: [P2PEngine.P2PMessage] { p2p.messages(in: channel) }
@@ -770,7 +1004,7 @@ struct P2PChannelView: View {
                     : nil)
             Divider()
             P2PTranscript(messages: messages, contactKey: nil,
-                          targets: channel.memberKeys, onOpenThread: { threadRoot = $0 })
+                          targets: channel.memberKeys, onOpenThread: onOpenThread)
             Divider()
             P2PComposerBar(placeholder: "Message dans #\(channel.name)…",
                            scope: channel.name,
@@ -782,12 +1016,66 @@ struct P2PChannelView: View {
         .onAppear { p2p.markChannelRead(channel.id) }
         .onChange(of: messages.count) { _ in p2p.markChannelRead(channel.id) }
         .sheet(isPresented: $showMembers) { P2PChannelSheet(existing: channel) }
-        .sheet(item: $threadRoot) { root in
-            P2PThreadSheet(root: root, replies: messages.filter { $0.replyTo == root.id },
-                           targets: channel.memberKeys, scope: channel.name,
-                           onSend: { p2p.sendChannelMessage($0, in: channel, replyTo: root.id) },
-                           onAttach: { p2p.sendChannelMessage("", attachment: $0, in: channel, replyTo: root.id) })
+    }
+}
+
+/// Panneau de fil de discussion affiché à droite (remplace la fiche contact).
+struct ThreadPanel: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let root: P2PEngine.P2PMessage
+    let scope: Route?
+    var onClose: () -> Void
+
+    private var contactKey: String? { if case .contact(let k)? = scope { return k }; return nil }
+    private var channel: P2PEngine.P2PChannel? {
+        if case .channel(let id)? = scope { return p2p.channels.first { $0.id == id } }; return nil
+    }
+    private var targets: [String] { channel?.memberKeys ?? (contactKey.map { [$0] } ?? []) }
+    private var replies: [P2PEngine.P2PMessage] {
+        let all: [P2PEngine.P2PMessage]
+        if let channel { all = p2p.messages(in: channel) }
+        else if let contactKey { all = p2p.chats[contactKey] ?? [] }
+        else { all = [] }
+        return all.filter { $0.replyTo == root.id }.sorted { $0.date < $1.date }
+    }
+    private func send(_ text: String, _ att: P2PEngine.P2PAttachment?) {
+        if let channel { p2p.sendChannelMessage(text, attachment: att, in: channel, replyTo: root.id) }
+        else if let contactKey { p2p.send(text, attachment: att, to: contactKey, replyTo: root.id) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Fil de discussion").font(Theme.h2).foregroundStyle(Theme.textPrimary)
+                Spacer()
+                Button { onClose() } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .padding(Theme.Space.md)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    P2PRow(message: root, contactKey: targets.first, showHeader: true,
+                           targets: targets, inThread: true)
+                    HStack(spacing: 8) {
+                        Text("\(replies.count) réponse\(replies.count > 1 ? "s" : "")")
+                            .font(Theme.small).foregroundStyle(Theme.textSecondary)
+                        Rectangle().frame(height: 1).foregroundStyle(Theme.separator)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    ForEach(replies) { r in
+                        P2PRow(message: r, contactKey: targets.first, showHeader: true,
+                               targets: targets, inThread: true)
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+            Divider()
+            P2PComposerBar(placeholder: "Répondre…",
+                           scope: channel?.name ?? (contactKey.map { p2p.name(for: $0) } ?? "Fil"),
+                           onSendText: { send($0, nil) }, onAttach: { send("", $0) })
         }
+        .background(Theme.surface)
     }
 }
 
@@ -885,7 +1173,7 @@ struct ProfilePanel: View {
     @EnvironmentObject var p2p: P2PEngine
     @EnvironmentObject var store: AppStore
     let contactKey: String
-    var openTab: (MainTab) -> Void
+    var openFiles: () -> Void
 
     var files: [RemoteFile] { p2p.remoteFiles[contactKey] ?? [] }
 
@@ -903,10 +1191,12 @@ struct ProfilePanel: View {
                         .font(Theme.small)
                         .foregroundStyle(p2p.isOnline(contactKey) ? Theme.success : Theme.textSecondary)
                 }
-                HStack(spacing: Theme.Space.sm) {
-                    panelButton("Chat", "bubble.left") { openTab(.chat) }
-                    panelButton("Fichiers", "folder") { openTab(.files) }
+                Button { openFiles() } label: {
+                    Label("Voir ses fichiers", systemImage: "folder")
+                        .frame(maxWidth: .infinity).padding(.vertical, Theme.Space.sm)
+                        .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(Theme.surfaceAlt))
                 }
+                .buttonStyle(.plain).foregroundStyle(Theme.textPrimary)
 
                 Divider()
                 VStack(alignment: .leading, spacing: Theme.Space.sm) {
@@ -921,7 +1211,7 @@ struct ProfilePanel: View {
                         HStack {
                             Text("FICHIERS").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
                             Spacer()
-                            Button("Tout voir") { openTab(.files) }.font(Theme.small).buttonStyle(.plain)
+                            Button("Tout voir") { openFiles() }.font(Theme.small).buttonStyle(.plain)
                                 .foregroundStyle(Theme.accent)
                         }
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 66), spacing: 8)], spacing: 8) {

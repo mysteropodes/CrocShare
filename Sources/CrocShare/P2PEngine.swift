@@ -76,7 +76,7 @@ final class P2PEngine: ObservableObject {
     @Published var log: [String] = []
 
     /// Téléchargement P2P (file d'attente hors-ligne comme côté croc).
-    struct P2PDownload: Identifiable, Hashable {
+    struct P2PDownload: Identifiable, Hashable, Codable {
         var id: UUID
         var contactKey: String
         var relPath: String
@@ -86,8 +86,8 @@ final class P2PEngine: ObservableObject {
     }
 
     /// Listes de fichiers partagés reçues des contacts (clé z32 → fichiers).
-    @Published var remoteFiles: [String: [RemoteFile]] = [:]
-    @Published var fileDownloads: [P2PDownload] = []
+    @Published var remoteFiles: [String: [RemoteFile]] = [:] { didSet { saveRemoteFiles() } }
+    @Published var fileDownloads: [P2PDownload] = [] { didSet { saveDownloads() } }
     @Published var pairingState: PairingState = .idle
     @Published var channels: [P2PChannel] = [] { didSet { saveChannels() } }
     @Published var channelUnread: [UUID: Int] = [:]
@@ -107,9 +107,17 @@ final class P2PEngine: ObservableObject {
     private var namesURL: URL { AppStore.supportDir.appendingPathComponent("p2p-names.json") }
     private var channelsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-channels.json") }
     private var reactionsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-reactions.json") }
+    private var remoteFilesURL: URL { AppStore.supportDir.appendingPathComponent("p2p-remotefiles.json") }
+    private var downloadsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-downloads.json") }
 
     private func saveChannels() {
         if let data = try? JSONEncoder().encode(channels) { try? data.write(to: channelsURL) }
+    }
+    private func saveRemoteFiles() {
+        if let data = try? JSONEncoder().encode(remoteFiles) { try? data.write(to: remoteFilesURL) }
+    }
+    private func saveDownloads() {
+        if let data = try? JSONEncoder().encode(fileDownloads) { try? data.write(to: downloadsURL) }
     }
     private func saveReactions() {
         let mapped = Dictionary(uniqueKeysWithValues: reactions.map { ($0.key.uuidString, $0.value) })
@@ -127,6 +135,15 @@ final class P2PEngine: ObservableObject {
             reactions = Dictionary(uniqueKeysWithValues: map.compactMap { k, v in
                 UUID(uuidString: k).map { ($0, v) }
             })
+        }
+        if let data = try? Data(contentsOf: remoteFilesURL),
+           let map = try? dec.decode([String: [RemoteFile]].self, from: data) {
+            remoteFiles = map
+        }
+        if let data = try? Data(contentsOf: downloadsURL),
+           let list = try? dec.decode([P2PDownload].self, from: data) {
+            // Un transfert interrompu repart en attente.
+            fileDownloads = list.map { var d = $0; if d.status == .transferring { d.status = .waiting }; return d }
         }
         if let data = try? Data(contentsOf: chatsURL),
            let map = try? dec.decode([String: [P2PMessage]].self, from: data) {
@@ -530,6 +547,9 @@ final class P2PEngine: ObservableObject {
         }
         return files.sorted { $0.path < $1.path }
     }
+
+    /// Mes propres fichiers partagés (contenu de mon dossier partagé).
+    func myFiles() -> [RemoteFile] { buildManifest() }
 
     func sendManifest(to key: String) {
         let files = buildManifest()
