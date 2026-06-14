@@ -20,8 +20,23 @@ final class P2PEngine: ObservableObject {
         var id: String { key }
     }
 
-    /// Message de chat P2P (texte). id partagé entre les deux pairs pour la
-    /// déduplication et les accusés.
+    /// Pièce jointe d'un message P2P (le fichier vit dans le dossier partagé de
+    /// l'expéditeur sous Chat/… et se télécharge via le même mécanisme que les fichiers).
+    struct P2PAttachment: Codable, Hashable {
+        var fileName: String
+        var relPath: String
+        var size: Int64
+        var isImage: Bool {
+            ["png","jpg","jpeg","gif","heic","webp","tiff"].contains((fileName as NSString).pathExtension.lowercased())
+        }
+        var isVideo: Bool {
+            ["mp4","mov","m4v"].contains((fileName as NSString).pathExtension.lowercased())
+        }
+        var isRive: Bool { (fileName as NSString).pathExtension.lowercased() == "riv" }
+    }
+
+    /// Message de chat P2P. id partagé entre pairs (dédup + accusés).
+    /// `channel` = nil pour un message direct, sinon id du salon.
     struct P2PMessage: Identifiable, Codable, Hashable {
         var id: UUID
         var fromMe: Bool
@@ -29,6 +44,22 @@ final class P2PEngine: ObservableObject {
         var text: String
         var date: Date
         var delivered: Bool
+        var channel: UUID? = nil
+        var attachment: P2PAttachment? = nil
+        /// Clé z32 de l'expéditeur (pour télécharger les pièces jointes de salon).
+        var fromKey: String? = nil
+    }
+
+    /// Salon façon Slack : un nom + des membres (clés P2P).
+    struct P2PChannel: Identifiable, Codable, Hashable {
+        var id: UUID
+        var name: String
+        var memberKeys: [String]
+        var createdBy: String
+    }
+
+    enum PairingState: Equatable {
+        case idle, hosting, joining, success(String), failed(String)
     }
 
     @Published var status: Status = .stopped
@@ -55,6 +86,9 @@ final class P2PEngine: ObservableObject {
     /// Listes de fichiers partagés reçues des contacts (clé z32 → fichiers).
     @Published var remoteFiles: [String: [RemoteFile]] = [:]
     @Published var fileDownloads: [P2PDownload] = []
+    @Published var pairingState: PairingState = .idle
+    @Published var channels: [P2PChannel] = [] { didSet { saveChannels() } }
+    @Published var channelUnread: [UUID: Int] = [:]
 
     var myName: String = ""
     var sharedFolder: String?
@@ -67,9 +101,18 @@ final class P2PEngine: ObservableObject {
 
     private var chatsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-chats.json") }
     private var namesURL: URL { AppStore.supportDir.appendingPathComponent("p2p-names.json") }
+    private var channelsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-channels.json") }
+
+    private func saveChannels() {
+        if let data = try? JSONEncoder().encode(channels) { try? data.write(to: channelsURL) }
+    }
 
     init() {
         let dec = JSONDecoder()
+        if let data = try? Data(contentsOf: channelsURL),
+           let list = try? dec.decode([P2PChannel].self, from: data) {
+            channels = list
+        }
         if let data = try? Data(contentsOf: chatsURL),
            let map = try? dec.decode([String: [P2PMessage]].self, from: data) {
             chats = map
@@ -165,6 +208,7 @@ final class P2PEngine: ObservableObject {
                 flushOutbox(to: key)        // chat en attente
                 sendManifest(to: key)       // ma liste de fichiers
                 flushDownloads(to: key)     // téléchargements en attente
+                syncChannels(to: key)       // définitions de salons
             }
         case "peer.disconnected":
             if let key = event.params["contactKey"] as? String {
@@ -176,6 +220,7 @@ final class P2PEngine: ObservableObject {
                 inviteCode = ""
                 if !contacts.contains(key) { contacts.append(key) }
                 addLog("Appairé avec \(name(for: key))")
+                pairingState = .success(name(for: key))
                 Task { await refreshContacts() }
             }
         case "peer.message":
@@ -206,20 +251,37 @@ final class P2PEngine: ObservableObject {
             if let reqId = payload["reqId"] as? String, let rel = payload["relPath"] as? String {
                 serveFile(reqId: reqId, relPath: rel, to: key)
             }
+        case "chan":
+            if let json = payload["json"] as? String, let d = json.data(using: .utf8),
+               let chan = try? JSONDecoder().decode(P2PChannel.self, from: d) {
+                ingestChannel(chan)
+            }
         case "msg":
             guard let idStr = payload["id"] as? String, let id = UUID(uuidString: idStr) else { return }
             let text = payload["t"] as? String ?? ""
             let date = (payload["ts"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
+            let ch = (payload["ch"] as? String).flatMap { UUID(uuidString: $0) }
+            var att: P2PAttachment?
+            if let a = payload["att"] as? [String: Any], let fn = a["fileName"] as? String,
+               let rp = a["relPath"] as? String {
+                let sz = (a["size"] as? NSNumber)?.int64Value ?? Int64(a["size"] as? Int ?? 0)
+                att = P2PAttachment(fileName: fn, relPath: rp, size: sz)
+            }
             var thread = chats[key] ?? []
             if !thread.contains(where: { $0.id == id }) {
                 thread.append(P2PMessage(id: id, fromMe: false, fromName: name(for: key),
-                                         text: text, date: date, delivered: true))
+                                         text: text, date: date, delivered: true,
+                                         channel: ch, attachment: att, fromKey: key))
                 thread.sort { $0.date < $1.date }
                 chats[key] = thread
-                unread[key, default: 0] += 1
-                Notifier.notify(title: "Message P2P de \(name(for: key))", body: text)
+                if let ch { channelUnread[ch, default: 0] += 1 } else { unread[key, default: 0] += 1 }
+                let title = ch.flatMap { cid in channels.first { $0.id == cid } }
+                    .map { "#\($0.name) — \(name(for: key))" } ?? "Message P2P de \(name(for: key))"
+                Notifier.notify(title: title, body: att != nil ? "📎 \(att!.fileName)" : text)
+                if let att, att.isImage || att.isVideo {
+                    downloadFile(RemoteFile(path: att.relPath, size: att.size, mtime: date), from: key)
+                }
             }
-            // Accusé de réception.
             Task { try? await bridge?.request("peer.send",
                 ["contactKey": key, "payload": ["k": "ack", "ids": [idStr]]]) }
         case "ack":
@@ -235,20 +297,41 @@ final class P2PEngine: ObservableObject {
         }
     }
 
-    func send(_ text: String, to key: String) {
+    func send(_ text: String, attachment: P2PAttachment? = nil, to key: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || attachment != nil else { return }
         let msg = P2PMessage(id: UUID(), fromMe: true, fromName: myName,
-                             text: trimmed, date: Date(), delivered: false)
+                             text: trimmed, date: Date(), delivered: false,
+                             attachment: attachment, fromKey: myPublicKey)
         chats[key, default: []].append(msg)
         deliver(msg, to: key)
     }
 
+    /// Message de salon : même id partagé, déposé dans le fil de chaque membre
+    /// (réutilise la file d'attente/accusés du chat direct ; vue salon dédupe par id).
+    func sendChannelMessage(_ text: String, attachment: P2PAttachment? = nil, in channel: P2PChannel) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || attachment != nil else { return }
+        let id = UUID()
+        let now = Date()
+        for memberKey in channel.memberKeys where memberKey != myPublicKey {
+            let msg = P2PMessage(id: id, fromMe: true, fromName: myName, text: trimmed,
+                                 date: now, delivered: false, channel: channel.id,
+                                 attachment: attachment, fromKey: myPublicKey)
+            chats[memberKey, default: []].append(msg)
+            deliver(msg, to: memberKey)
+        }
+    }
+
     private func deliver(_ msg: P2PMessage, to key: String) {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "k": "msg", "id": msg.id.uuidString, "t": msg.text,
             "ts": msg.date.timeIntervalSince1970 * 1000
         ]
+        if let ch = msg.channel { payload["ch"] = ch.uuidString }
+        if let a = msg.attachment {
+            payload["att"] = ["fileName": a.fileName, "relPath": a.relPath, "size": a.size]
+        }
         Task {
             _ = try? await bridge?.request("peer.send", ["contactKey": key, "payload": payload])
             // Délivré confirmé par l'ack ; sinon renvoyé à la prochaine connexion.
@@ -275,6 +358,97 @@ final class P2PEngine: ObservableObject {
     }
 
     var totalUnread: Int { unread.values.reduce(0, +) }
+
+    // MARK: - Salons (Slack-like) sur P2P
+
+    func createChannel(name: String, memberKeys: [String]) {
+        let chan = P2PChannel(id: UUID(), name: name, memberKeys: memberKeys, createdBy: myPublicKey)
+        channels.append(chan)
+        for k in memberKeys where k != myPublicKey { sendChannelDef(chan, to: k) }
+    }
+
+    func updateChannelMembers(_ id: UUID, memberKeys: [String]) {
+        guard let i = channels.firstIndex(where: { $0.id == id }) else { return }
+        channels[i].memberKeys = memberKeys
+        for k in memberKeys where k != myPublicKey { sendChannelDef(channels[i], to: k) }
+    }
+
+    func removeChannel(_ id: UUID) {
+        channels.removeAll { $0.id == id }
+        channelUnread[id] = nil
+    }
+
+    private func ingestChannel(_ chan: P2PChannel) {
+        if let i = channels.firstIndex(where: { $0.id == chan.id }) {
+            if channels[i] != chan { channels[i] = chan }
+        } else {
+            channels.append(chan)
+            Notifier.notify(title: "Nouveau salon", body: "Tu as été ajouté à #\(chan.name)")
+        }
+    }
+
+    private func sendChannelDef(_ chan: P2PChannel, to key: String) {
+        guard let data = try? JSONEncoder().encode(chan), let json = String(data: data, encoding: .utf8) else { return }
+        Task { try? await bridge?.request("peer.send", ["contactKey": key, "payload": ["k": "chan", "json": json]]) }
+    }
+
+    private func syncChannels(to key: String) {
+        for chan in channels where chan.createdBy == myPublicKey && chan.memberKeys.contains(key) {
+            sendChannelDef(chan, to: key)
+        }
+    }
+
+    func messages(in channel: P2PChannel) -> [P2PMessage] {
+        var seen = Set<UUID>()
+        return channel.memberKeys.flatMap { chats[$0] ?? [] }
+            .filter { $0.channel == channel.id }
+            .sorted { $0.date < $1.date }
+            .filter { seen.insert($0.id).inserted }
+    }
+
+    func markChannelRead(_ id: UUID) { channelUnread[id] = 0 }
+
+    // MARK: - Pièces jointes du chat
+
+    /// Copie un fichier déposé dans le chat vers le dossier partagé (Chat/<scope>/).
+    func importChatFile(_ url: URL, scope: String) -> P2PAttachment? {
+        guard let shared = sharedFolder else { return nil }
+        let fm = FileManager.default
+        let safe = scope.replacingOccurrences(of: "/", with: "-")
+        let destDir = URL(fileURLWithPath: shared).appendingPathComponent("Chat").appendingPathComponent(safe)
+        try? fm.createDirectory(at: destDir, withIntermediateDirectories: true)
+        let base = (url.lastPathComponent as NSString).deletingPathExtension
+        let ext = url.pathExtension
+        var name = url.lastPathComponent
+        var dest = destDir.appendingPathComponent(name); var n = 1
+        while fm.fileExists(atPath: dest.path) {
+            name = ext.isEmpty ? "\(base)-\(n)" : "\(base)-\(n).\(ext)"
+            dest = destDir.appendingPathComponent(name); n += 1
+        }
+        do { try fm.copyItem(at: url, to: dest) } catch { return nil }
+        let size = (try? fm.attributesOfItem(atPath: dest.path)[.size] as? NSNumber)?.int64Value ?? 0
+        return P2PAttachment(fileName: name, relPath: "Chat/\(safe)/\(name)", size: size)
+    }
+
+    /// URL locale d'une pièce jointe (mienne = dossier partagé ; reçue = dossier de réception).
+    func attachmentURL(_ msg: P2PMessage) -> URL? {
+        guard let att = msg.attachment else { return nil }
+        if msg.fromMe {
+            return sharedFolder.map { URL(fileURLWithPath: $0).appendingPathComponent(att.relPath) }
+        }
+        guard let base = downloadBase, let fk = msg.fromKey else { return nil }
+        return URL(fileURLWithPath: base).appendingPathComponent(name(for: fk)).appendingPathComponent(att.relPath)
+    }
+
+    func attachmentDownloaded(_ msg: P2PMessage) -> Bool {
+        guard let u = attachmentURL(msg) else { return false }
+        return FileManager.default.fileExists(atPath: u.path)
+    }
+
+    func downloadAttachment(_ msg: P2PMessage) {
+        guard let att = msg.attachment, let fk = msg.fromKey, !msg.fromMe else { return }
+        downloadFile(RemoteFile(path: att.relPath, size: att.size, mtime: msg.date), from: fk)
+    }
 
     // MARK: - Fichiers (Phase 4) — partage à la demande sur le tunnel P2P
 
@@ -395,28 +569,39 @@ final class P2PEngine: ObservableObject {
     // MARK: - Appairage / actions
 
     func createInvite() {
+        pairingState = .hosting
         Task {
             do {
                 let res = try await bridge?.request("pairing.createInvite")
                 inviteCode = res?["invite"] as? String ?? ""
                 addLog("Invitation créée")
-            } catch { addLog("createInvite: \(error.localizedDescription)") }
+            } catch {
+                pairingState = .failed(error.localizedDescription)
+                addLog("createInvite: \(error.localizedDescription)")
+            }
         }
     }
 
     func acceptInvite(_ code: String) {
+        pairingState = .joining
         Task {
             do {
-                let res = try await bridge?.request("pairing.acceptInvite", ["invite": code], timeout: 50)
+                let res = try await bridge?.request("pairing.acceptInvite", ["invite": code], timeout: 130)
                 if let key = res?["contactKey"] as? String {
                     if let nm = res?["name"] as? String, !nm.isEmpty { contactNames[key] = nm }
                     if !contacts.contains(key) { contacts.append(key) }
                     addLog("Appairé via code → \(name(for: key))")
+                    pairingState = .success(name(for: key))
                 }
                 await refreshContacts()
-            } catch { addLog("acceptInvite: \(error.localizedDescription)") }
+            } catch {
+                pairingState = .failed("Aucune réponse — vérifie que ton contact a bien créé le code et qu'il est en ligne.")
+                addLog("acceptInvite: \(error.localizedDescription)")
+            }
         }
     }
+
+    func resetPairing() { pairingState = .idle; inviteCode = "" }
 
     func ping(_ key: String) {
         Task {

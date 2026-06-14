@@ -37,9 +37,16 @@ struct MainTabBar: View {
 struct ContentView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var p2p: P2PEngine
-    @State private var selection: String?          // clé P2P (z32) du contact
+    @State private var selection: String?          // clé P2P du contact, ou "chan:<uuid>"
     @State private var mainTab: MainTab = .chat
     @State private var showPairing = false
+    @State private var showNewChannel = false
+
+    private var selectedChannel: P2PEngine.P2PChannel? {
+        guard let s = selection, s.hasPrefix("chan:"), let id = UUID(uuidString: String(s.dropFirst(5)))
+        else { return nil }
+        return p2p.channels.first { $0.id == id }
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -62,6 +69,26 @@ struct ContentView: View {
                             Text("Aucun contact").foregroundStyle(.secondary).font(.caption)
                         }
                     }
+                    Section("Salons") {
+                        ForEach(p2p.channels) { chan in
+                            HStack {
+                                Label(chan.name, systemImage: "number")
+                                Spacer()
+                                UnreadBadge(count: p2p.channelUnread[chan.id] ?? 0)
+                            }
+                            .tag("chan:\(chan.id.uuidString)")
+                            .contextMenu {
+                                Button("Supprimer le salon", role: .destructive) {
+                                    p2p.removeChannel(chan.id)
+                                }
+                            }
+                        }
+                        Button { showNewChannel = true } label: {
+                            Label("Nouveau salon…", systemImage: "plus.circle")
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(p2p.contacts.isEmpty)
+                    }
                 }
                 .listStyle(.sidebar)
             }
@@ -77,6 +104,7 @@ struct ContentView: View {
             detailContent
         }
         .sheet(isPresented: $showPairing) { P2PPairingSheet() }
+        .sheet(isPresented: $showNewChannel) { P2PChannelSheet(existing: nil) }
         .frame(minWidth: 820, minHeight: 540)
     }
 
@@ -86,7 +114,9 @@ struct ContentView: View {
         case .config:
             ConfigTab()
         case .chat:
-            if let key = selection, p2p.contacts.contains(key) {
+            if let chan = selectedChannel {
+                P2PChannelView(channel: chan)
+            } else if let key = selection, p2p.contacts.contains(key) {
                 P2PChatView(contactKey: key)
             } else {
                 WelcomeP2P(showPairing: $showPairing, openConfig: { mainTab = .config })
@@ -162,40 +192,105 @@ struct P2PPairingSheet: View {
     var body: some View {
         VStack(spacing: 16) {
             Text("Ajouter un contact").font(.title3.bold())
-            Picker("", selection: $mode) {
-                Text("Inviter").tag(0)
-                Text("Rejoindre").tag(1)
-            }.pickerStyle(.segmented)
 
-            if mode == 0 {
-                Text("Génère un code et transmets-le à ton contact (message, oral…). La connexion s'établit automatiquement, chiffrée, sans relai.")
-                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                if p2p.inviteCode.isEmpty {
-                    Button("Générer un code") { p2p.createInvite() }.buttonStyle(.borderedProminent)
-                } else {
-                    HStack {
-                        Text(p2p.inviteCode).font(.system(.title3, design: .monospaced).bold())
-                            .textSelection(.enabled)
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(p2p.inviteCode, forType: .string)
-                        } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.plain)
+            switch p2p.pairingState {
+            case .joining:
+                ProgressView().controlSize(.large)
+                Text("Connexion à ton contact…").font(.callout)
+                Text("Recherche sur le réseau, ça peut prendre jusqu'à 2 minutes.\nGarde cette fenêtre ouverte.")
+                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Button("Annuler") { p2p.resetPairing() }
+            case .success(let nm):
+                Image(systemName: "checkmark.circle.fill").font(.largeTitle).foregroundStyle(.green)
+                Text("Connecté à \(nm) !").font(.headline)
+                Button("Terminer") { p2p.resetPairing(); dismiss() }.buttonStyle(.borderedProminent)
+            case .failed(let msg):
+                Image(systemName: "xmark.circle.fill").font(.largeTitle).foregroundStyle(.red)
+                Text(msg).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Button("Réessayer") { p2p.resetPairing() }.buttonStyle(.borderedProminent)
+            case .idle, .hosting:
+                Picker("", selection: $mode) {
+                    Text("Inviter").tag(0)
+                    Text("Rejoindre").tag(1)
+                }.pickerStyle(.segmented)
+
+                if mode == 0 {
+                    Text("Génère un code et transmets-le à ton contact (message, oral…). La connexion s'établit automatiquement, chiffrée, sans relai.")
+                        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    if p2p.inviteCode.isEmpty {
+                        Button("Générer un code") { p2p.createInvite() }.buttonStyle(.borderedProminent)
+                    } else {
+                        HStack {
+                            Text(p2p.inviteCode).font(.system(.title3, design: .monospaced).bold())
+                                .textSelection(.enabled)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(p2p.inviteCode, forType: .string)
+                            } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.plain)
+                        }
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("En attente que ton contact saisisse le code…")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
-                    Text("En attente que ton contact saisisse le code…")
-                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Saisis le code que ton contact t'a communiqué.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    TextField("cs1-…", text: $joinCode).textFieldStyle(.roundedBorder).frame(width: 260)
+                        .onSubmit { p2p.acceptInvite(joinCode); joinCode = "" }
+                    Button("Rejoindre") { p2p.acceptInvite(joinCode); joinCode = "" }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(joinCode.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-            } else {
-                Text("Saisis le code que ton contact t'a communiqué.")
-                    .font(.callout).foregroundStyle(.secondary)
-                TextField("cs1-…", text: $joinCode).textFieldStyle(.roundedBorder).frame(width: 260)
-                    .onSubmit { p2p.acceptInvite(joinCode); joinCode = "" }
-                Button("Rejoindre") { p2p.acceptInvite(joinCode); joinCode = "" }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(joinCode.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Fermer") { p2p.resetPairing(); dismiss() }
             }
-            Button("Fermer") { dismiss() }
         }
         .padding(28).frame(width: 420)
+        .onDisappear { p2p.resetPairing() }
+    }
+}
+
+/// Regroupe des messages P2P par jour (séparateurs).
+func p2pDays(_ messages: [P2PEngine.P2PMessage]) -> [(date: Date, messages: [P2PEngine.P2PMessage])] {
+    let cal = Calendar.current
+    var out: [(date: Date, messages: [P2PEngine.P2PMessage])] = []
+    for m in messages.sorted(by: { $0.date < $1.date }) {
+        let day = cal.startOfDay(for: m.date)
+        if let last = out.last, cal.isDate(last.date, inSameDayAs: day) {
+            out[out.count - 1].messages.append(m)
+        } else {
+            out.append((date: day, messages: [m]))
+        }
+    }
+    return out
+}
+
+/// Bouton + zone de dépôt pour joindre un fichier à un chat/salon P2P.
+struct P2PComposerBar: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let placeholder: String
+    let scope: String
+    let onSendText: (String) -> Void
+    let onAttach: (P2PEngine.P2PAttachment) -> Void
+    @State private var draft = ""
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            Button { pickAndAttach() } label: {
+                Image(systemName: "paperclip").font(.title3)
+            }
+            .buttonStyle(.plain).foregroundStyle(.secondary)
+            .help("Joindre un fichier")
+            ChatComposer(draft: $draft, placeholder: placeholder, onSend: onSendText)
+        }
+    }
+
+    private func pickAndAttach() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if let att = p2p.importChatFile(url, scope: scope) { onAttach(att) }
     }
 }
 
@@ -207,20 +302,7 @@ struct P2PChatView: View {
     @State private var draft = ""
 
     var messages: [P2PEngine.P2PMessage] {
-        (p2p.chats[contactKey] ?? []).sorted { $0.date < $1.date }
-    }
-    var days: [(date: Date, messages: [P2PEngine.P2PMessage])] {
-        let cal = Calendar.current
-        var out: [(date: Date, messages: [P2PEngine.P2PMessage])] = []
-        for m in messages {
-            let day = cal.startOfDay(for: m.date)
-            if let last = out.last, cal.isDate(last.date, inSameDayAs: day) {
-                out[out.count - 1].messages.append(m)
-            } else {
-                out.append((date: day, messages: [m]))
-            }
-        }
-        return out
+        (p2p.chats[contactKey] ?? []).filter { $0.channel == nil }.sorted { $0.date < $1.date }
     }
 
     var body: some View {
@@ -240,31 +322,12 @@ struct P2PChatView: View {
             .padding(.horizontal).padding(.vertical, 10)
             Divider()
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(days, id: \.date) { day in
-                            DayDivider(date: day.date)
-                            ForEach(Array(day.messages.enumerated()), id: \.element.id) { idx, m in
-                                let prev = idx > 0 ? day.messages[idx - 1] : nil
-                                let grouped = prev != nil && prev!.fromMe == m.fromMe
-                                    && m.date.timeIntervalSince(prev!.date) < 300
-                                P2PRow(message: m, contactKey: contactKey, showHeader: !grouped)
-                                    .id(m.id)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 6)
-                }
-                .onAppear { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
-                .onChange(of: messages.count) { _ in
-                    withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
-                }
-            }
+            P2PTranscript(messages: messages, contactKey: contactKey)
             Divider()
-            ChatComposer(draft: $draft, placeholder: "Message P2P à \(p2p.name(for: contactKey))…") { text in
-                p2p.send(text, to: contactKey)
-            }
+            P2PComposerBar(placeholder: "Message P2P à \(p2p.name(for: contactKey))…",
+                           scope: p2p.name(for: contactKey),
+                           onSendText: { p2p.send($0, to: contactKey) },
+                           onAttach: { p2p.send("", attachment: $0, to: contactKey) })
             if !p2p.isOnline(contactKey) {
                 Text("Hors ligne — le message partira dès que \(p2p.name(for: contactKey)) sera connecté.")
                     .font(.caption).foregroundStyle(.orange).padding(.bottom, 6)
@@ -272,6 +335,38 @@ struct P2PChatView: View {
         }
         .onAppear { p2p.markRead(contactKey) }
         .onChange(of: messages.count) { _ in p2p.markRead(contactKey) }
+    }
+}
+
+/// Liste de messages P2P (jours + groupage), réutilisée par chat direct et salon.
+struct P2PTranscript: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let messages: [P2PEngine.P2PMessage]
+    var contactKey: String? = nil   // nil = salon (afficher les noms)
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(p2pDays(messages), id: \.date) { day in
+                        DayDivider(date: day.date)
+                        ForEach(Array(day.messages.enumerated()), id: \.element.id) { idx, m in
+                            let prev = idx > 0 ? day.messages[idx - 1] : nil
+                            let grouped = prev != nil && prev!.fromMe == m.fromMe
+                                && prev!.fromName == m.fromName
+                                && m.date.timeIntervalSince(prev!.date) < 300
+                            P2PRow(message: m, contactKey: contactKey, showHeader: !grouped)
+                                .id(m.id)
+                        }
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+            .onAppear { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+            .onChange(of: messages.count) { _ in
+                withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+            }
+        }
     }
 }
 
@@ -419,12 +514,13 @@ struct P2PFileCard: View {
 struct P2PRow: View {
     @EnvironmentObject var p2p: P2PEngine
     let message: P2PEngine.P2PMessage
-    let contactKey: String
+    var contactKey: String? = nil
     let showHeader: Bool
 
-    var displayName: String { message.fromMe ? (p2p.myName.isEmpty ? "Moi" : p2p.myName) : p2p.name(for: contactKey) }
+    var senderKey: String { message.fromKey ?? contactKey ?? "" }
+    var displayName: String { message.fromMe ? (p2p.myName.isEmpty ? "Moi" : p2p.myName) : message.fromName }
     var avatarID: UUID {
-        P2PEngine.uuid(forKey: message.fromMe ? p2p.myPublicKey : contactKey)
+        P2PEngine.uuid(forKey: message.fromMe ? p2p.myPublicKey : senderKey)
     }
     var formatted: AttributedString {
         (try? AttributedString(markdown: message.text,
@@ -439,7 +535,7 @@ struct P2PRow: View {
             } else {
                 Color.clear.frame(width: 32)
             }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 if showHeader {
                     HStack(spacing: 6) {
                         Text(displayName).font(.subheadline.weight(.semibold))
@@ -452,13 +548,151 @@ struct P2PRow: View {
                         }
                     }
                 }
-                Text(formatted).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if message.attachment != nil {
+                    P2PAttachmentView(message: message)
+                }
+                if !message.text.isEmpty {
+                    Text(formatted).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12).padding(.vertical, showHeader ? 4 : 1)
+    }
+}
+
+/// Pièce jointe d'un message P2P : image/vidéo/Rive lisibles inline une fois
+/// téléchargées, sinon bouton de téléchargement (file d'attente hors-ligne).
+struct P2PAttachmentView: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let message: P2PEngine.P2PMessage
+    var att: P2PEngine.P2PAttachment { message.attachment! }
+    var url: URL? { p2p.attachmentURL(message) }
+    var downloaded: Bool { p2p.attachmentDownloaded(message) }
+    var pending: Bool {
+        p2p.fileDownloads.contains {
+            $0.relPath == att.relPath && ($0.status == .waiting || $0.status == .transferring)
+        }
+    }
+
+    var body: some View {
+        Group {
+            if downloaded, let url, att.isVideo {
+                VideoBubble(url: url)
+            } else if downloaded, let url, att.isRive {
+                RiveBubble(url: url)
+            } else if downloaded, let url, att.isImage, let img = NSImage(contentsOf: url) {
+                Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 280, maxHeight: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .onTapGesture { NSWorkspace.shared.open(url) }
+            } else if downloaded, let url {
+                Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
+                    Label("\(att.fileName) (\(formatBytes(att.size)))", systemImage: "doc.fill")
+                }.buttonStyle(.plain)
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: att.isVideo ? "video" : (att.isImage ? "photo" : "doc"))
+                    VStack(alignment: .leading) {
+                        Text(att.fileName).lineLimit(1)
+                        Text(formatBytes(att.size)).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if pending {
+                        ProgressView().controlSize(.small)
+                    } else if !message.fromMe {
+                        Button { p2p.downloadAttachment(message) } label: {
+                            Image(systemName: "arrow.down.circle.fill")
+                        }.buttonStyle(.plain)
+                    }
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.15)))
+            }
+        }
+    }
+}
+
+/// Salon P2P façon Slack : messages diffusés à tous les membres.
+struct P2PChannelView: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let channel: P2PEngine.P2PChannel
+    @State private var showMembers = false
+
+    var members: [String] { channel.memberKeys }
+    var messages: [P2PEngine.P2PMessage] { p2p.messages(in: channel) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "number.square.fill").font(.title2).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(channel.name).font(.headline)
+                    Text(members.map { p2p.name(for: $0) }.joined(separator: ", "))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                if channel.createdBy == p2p.myPublicKey {
+                    Button { showMembers = true } label: {
+                        Label("Membres", systemImage: "person.badge.plus")
+                    }
+                }
+            }
+            .padding(.horizontal).padding(.vertical, 10)
+            Divider()
+            P2PTranscript(messages: messages, contactKey: nil)
+            Divider()
+            P2PComposerBar(placeholder: "Message dans #\(channel.name)…",
+                           scope: channel.name,
+                           onSendText: { p2p.sendChannelMessage($0, in: channel) },
+                           onAttach: { p2p.sendChannelMessage("", attachment: $0, in: channel) })
+        }
+        .onAppear { p2p.markChannelRead(channel.id) }
+        .onChange(of: messages.count) { _ in p2p.markChannelRead(channel.id) }
+        .sheet(isPresented: $showMembers) { P2PChannelSheet(existing: channel) }
+    }
+}
+
+/// Création / édition des membres d'un salon (créateur uniquement).
+struct P2PChannelSheet: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @Environment(\.dismiss) var dismiss
+    var existing: P2PEngine.P2PChannel?
+    @State private var name = ""
+    @State private var selected: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(existing == nil ? "Nouveau salon" : "Membres de #\(existing!.name)").font(.title3.bold())
+            if existing == nil {
+                TextField("Nom du salon (ex. projet-x)", text: $name).textFieldStyle(.roundedBorder)
+            }
+            Text("Membres").font(.headline)
+            ForEach(p2p.contacts, id: \.self) { key in
+                Toggle(p2p.name(for: key), isOn: Binding(
+                    get: { selected.contains(key) },
+                    set: { on in if on { selected.insert(key) } else { selected.remove(key) } }
+                ))
+            }
+            Text("Le salon apparaît chez les membres à leur prochaine connexion. Pour que tout le monde voie tout, les membres doivent être appairés entre eux.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Annuler") { dismiss() }
+                Button(existing == nil ? "Créer" : "Enregistrer") {
+                    var keys = Array(selected)
+                    if !keys.contains(p2p.myPublicKey) { keys.append(p2p.myPublicKey) }
+                    if let ex = existing { p2p.updateChannelMembers(ex.id, memberKeys: keys) }
+                    else { p2p.createChannel(name: name.trimmingCharacters(in: .whitespaces), memberKeys: keys) }
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(existing == nil && name.trimmingCharacters(in: .whitespaces).isEmpty || selected.isEmpty)
+            }
+        }
+        .padding(24).frame(width: 380)
+        .onAppear { if let ex = existing { name = ex.name; selected = Set(ex.memberKeys.filter { $0 != p2p.myPublicKey }) } }
     }
 }
 
