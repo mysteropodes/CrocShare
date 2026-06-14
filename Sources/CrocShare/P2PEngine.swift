@@ -42,7 +42,25 @@ final class P2PEngine: ObservableObject {
     @Published var unread: [String: Int] = [:]
     @Published var log: [String] = []
 
+    /// Téléchargement P2P (file d'attente hors-ligne comme côté croc).
+    struct P2PDownload: Identifiable, Hashable {
+        var id: UUID
+        var contactKey: String
+        var relPath: String
+        var size: Int64
+        var status: PendingDownload.Status
+        var name: String { (relPath as NSString).lastPathComponent }
+    }
+
+    /// Listes de fichiers partagés reçues des contacts (clé z32 → fichiers).
+    @Published var remoteFiles: [String: [RemoteFile]] = [:]
+    @Published var fileDownloads: [P2PDownload] = []
+
     var myName: String = ""
+    var sharedFolder: String?
+    var downloadBase: String?
+    /// reqId → (clé contact, chemin) pour router les fichiers reçus.
+    private var fileReqs: [String: (key: String, relPath: String)] = [:]
     private var bridge: CoreBridge?
     private var eventTask: Task<Void, Never>?
     private var wakeObserver: NSObjectProtocol?
@@ -143,7 +161,9 @@ final class P2PEngine: ObservableObject {
                 peers.append(P2PPeer(key: key, direct: direct))
                 if !contacts.contains(key) { contacts.append(key) }
                 addLog("Connecté à \(name(for: key)) (\(direct ? "direct" : "relayé"))")
-                flushOutbox(to: key)   // file d'attente hors-ligne
+                flushOutbox(to: key)        // chat en attente
+                sendManifest(to: key)       // ma liste de fichiers
+                flushDownloads(to: key)     // téléchargements en attente
             }
         case "peer.disconnected":
             if let key = event.params["contactKey"] as? String {
@@ -161,6 +181,10 @@ final class P2PEngine: ObservableObject {
             if let key = event.params["contactKey"] as? String {
                 handlePayload(event.params["payload"] as? [String: Any] ?? [:], from: key)
             }
+        case "peer.fileReceived":
+            receiveFile(event.params)
+        case "peer.fileSendFailed":
+            addLog("Envoi fichier échoué : \(event.params["reason"] as? String ?? "?")")
         case "core.error":
             addLog("Erreur core : \(event.params["message"] as? String ?? "?")")
         default:
@@ -172,6 +196,15 @@ final class P2PEngine: ObservableObject {
 
     private func handlePayload(_ payload: [String: Any], from key: String) {
         switch payload["k"] as? String {
+        case "manifest":
+            if let json = payload["json"] as? String, let d = json.data(using: .utf8),
+               let files = try? JSONDecoder().decode([RemoteFile].self, from: d) {
+                remoteFiles[key] = files
+            }
+        case "freq":
+            if let reqId = payload["reqId"] as? String, let rel = payload["relPath"] as? String {
+                serveFile(reqId: reqId, relPath: rel, to: key)
+            }
         case "msg":
             guard let idStr = payload["id"] as? String, let id = UUID(uuidString: idStr) else { return }
             let text = payload["t"] as? String ?? ""
@@ -229,6 +262,122 @@ final class P2PEngine: ObservableObject {
     }
 
     func markRead(_ key: String) { unread[key] = 0 }
+
+    // MARK: - Fichiers (Phase 4) — partage à la demande sur le tunnel P2P
+
+    func configure(sharedFolder: String?, downloadBase: String?) {
+        self.sharedFolder = sharedFolder
+        self.downloadBase = downloadBase
+    }
+
+    /// Scanne mon dossier partagé (exclut le dossier de réception et les .croc).
+    private func buildManifest() -> [RemoteFile] {
+        guard let path = sharedFolder else { return [] }
+        let root = URL(fileURLWithPath: path)
+        let dlRoot = (downloadBase.map { URL(fileURLWithPath: $0) })?.standardizedFileURL.path
+        var files: [RemoteFile] = []
+        if let en = FileManager.default.enumerator(at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]) {
+            for case let url as URL in en {
+                let p = url.standardizedFileURL.path
+                if let dlRoot, p == dlRoot || p.hasPrefix(dlRoot + "/") { en.skipDescendants(); continue }
+                guard url.pathExtension != "croc",
+                      let v = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
+                      v.isRegularFile == true else { continue }
+                let rel = url.path.replacingOccurrences(of: root.path + "/", with: "")
+                files.append(RemoteFile(path: rel, size: Int64(v.fileSize ?? 0),
+                                        mtime: v.contentModificationDate ?? Date()))
+            }
+        }
+        return files.sorted { $0.path < $1.path }
+    }
+
+    func sendManifest(to key: String) {
+        let files = buildManifest()
+        guard let data = try? JSONEncoder().encode(files),
+              let json = String(data: data, encoding: .utf8) else { return }
+        Task { try? await bridge?.request("peer.send",
+            ["contactKey": key, "payload": ["k": "manifest", "json": json]]) }
+    }
+
+    /// Sert un fichier demandé (résolu dans mon dossier partagé, anti-traversée).
+    private func serveFile(reqId: String, relPath: String, to key: String) {
+        guard let shared = sharedFolder else { return }
+        let root = URL(fileURLWithPath: shared).standardizedFileURL
+        let abs = root.appendingPathComponent(relPath).standardizedFileURL
+        guard abs.path == root.path || abs.path.hasPrefix(root.path + "/"),
+              FileManager.default.fileExists(atPath: abs.path) else { return }
+        Task { try? await bridge?.request("peer.sendFile",
+            ["contactKey": key, "reqId": reqId, "relPath": relPath, "absPath": abs.path]) }
+    }
+
+    func downloadFile(_ file: RemoteFile, from key: String) {
+        let active = fileDownloads.contains {
+            $0.contactKey == key && $0.relPath == file.path
+                && ($0.status == .waiting || $0.status == .transferring)
+        }
+        guard !active else { return }
+        fileDownloads.append(P2PDownload(id: UUID(), contactKey: key, relPath: file.path,
+                                         size: file.size, status: .waiting))
+        if isOnline(key) { startDownload(key: key, relPath: file.path) }
+        else { Notifier.notify(title: "Mis en attente",
+                               body: "\(file.name) sera téléchargé dès que \(name(for: key)) sera en ligne.") }
+    }
+
+    private func flushDownloads(to key: String) {
+        for d in fileDownloads where d.contactKey == key && d.status == .waiting {
+            startDownload(key: key, relPath: d.relPath)
+        }
+    }
+
+    private func startDownload(key: String, relPath: String) {
+        setDownloadStatus(key: key, relPath: relPath, .transferring)
+        let reqId = UUID().uuidString
+        fileReqs[reqId] = (key, relPath)
+        Task { try? await bridge?.request("peer.send",
+            ["contactKey": key, "payload": ["k": "freq", "reqId": reqId, "relPath": relPath]]) }
+    }
+
+    private func receiveFile(_ params: [String: Any]) {
+        guard let reqId = params["reqId"] as? String,
+              let tmp = params["tmpPath"] as? String,
+              let info = fileReqs[reqId] else { return }
+        fileReqs[reqId] = nil
+        let key = info.key
+        let relPath = info.relPath
+        let base = downloadBase ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("CrocShare").path
+        let dest = URL(fileURLWithPath: base)
+            .appendingPathComponent(name(for: key))
+            .appendingPathComponent(relPath)
+        let fm = FileManager.default
+        try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.removeItem(at: dest)
+        do {
+            try fm.moveItem(at: URL(fileURLWithPath: tmp), to: dest)
+            setDownloadStatus(key: key, relPath: relPath, .done)
+            Notifier.notify(title: "Téléchargement terminé",
+                            body: "\((relPath as NSString).lastPathComponent) reçu de \(name(for: key))")
+        } catch {
+            setDownloadStatus(key: key, relPath: relPath, .failed)
+        }
+    }
+
+    private func setDownloadStatus(key: String, relPath: String, _ status: PendingDownload.Status) {
+        if let i = fileDownloads.firstIndex(where: {
+            $0.contactKey == key && $0.relPath == relPath
+                && ($0.status == .waiting || $0.status == .transferring)
+        }) {
+            fileDownloads[i].status = status
+        }
+    }
+
+    func isDownloaded(_ relPath: String, from key: String) -> Bool {
+        guard let base = downloadBase else { return false }
+        let p = URL(fileURLWithPath: base).appendingPathComponent(name(for: key)).appendingPathComponent(relPath)
+        return FileManager.default.fileExists(atPath: p.path)
+    }
 
     // MARK: - Appairage / actions
 

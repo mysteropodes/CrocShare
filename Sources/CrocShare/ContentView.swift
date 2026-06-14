@@ -178,7 +178,9 @@ struct ContentView: View {
                 WelcomeView(showPairingSheet: $showPairingSheet, openConfig: { mainTab = .config })
             }
         case .files:
-            if let id = selection, let contact = store.contacts.first(where: { $0.id == id }) {
+            if let id = selection, let key = p2pKey(for: id) {
+                P2PFilesView(contactKey: key)
+            } else if let id = selection, let contact = store.contacts.first(where: { $0.id == id }) {
                 ContactFilesView(contact: contact)
             } else {
                 ContentPlaceholder(icon: "folder",
@@ -267,6 +269,81 @@ struct P2PChatView: View {
         }
         .onAppear { p2p.markRead(contactKey) }
         .onChange(of: messages.count) { _ in p2p.markRead(contactKey) }
+    }
+}
+
+/// Onglet Fichiers d'un contact P2P : liste des fichiers partagés + téléchargement.
+struct P2PFilesView: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @EnvironmentObject var store: AppStore
+    let contactKey: String
+
+    var files: [RemoteFile] { (p2p.remoteFiles[contactKey] ?? []).sorted { $0.path < $1.path } }
+    var pendings: [P2PEngine.P2PDownload] {
+        p2p.fileDownloads.filter { $0.contactKey == contactKey }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                AvatarView(name: p2p.name(for: contactKey),
+                           id: P2PEngine.uuid(forKey: contactKey), size: 30)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(p2p.name(for: contactKey)).font(.headline)
+                    Text(p2p.isOnline(contactKey) ? "en ligne · P2P" : "hors ligne")
+                        .font(.caption)
+                        .foregroundStyle(p2p.isOnline(contactKey) ? Color.green : .secondary)
+                }
+                Spacer()
+                if p2p.isOnline(contactKey), !files.isEmpty {
+                    Button("Tout télécharger") {
+                        for f in files { p2p.downloadFile(f, from: contactKey) }
+                    }.font(.caption)
+                }
+            }
+            .padding(.horizontal).padding(.vertical, 10)
+            Divider()
+
+            if files.isEmpty {
+                ContentPlaceholder(icon: p2p.isOnline(contactKey) ? "tray" : "wifi.slash",
+                    text: p2p.isOnline(contactKey)
+                        ? "Aucun fichier partagé pour le moment."
+                        : "Hors ligne — la liste apparaîtra à la connexion.")
+            } else {
+                List {
+                    ForEach(files) { file in
+                        HStack {
+                            Image(systemName: "doc")
+                            VStack(alignment: .leading) {
+                                Text(file.path)
+                                Text(formatBytes(file.size)).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            let pending = pendings.first {
+                                $0.relPath == file.path && ($0.status == .waiting || $0.status == .transferring)
+                            }
+                            if p2p.isDownloaded(file.path, from: contactKey) {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            } else if let pending {
+                                if pending.status == .transferring {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "clock").foregroundStyle(.orange)
+                                }
+                            } else {
+                                Button {
+                                    p2p.downloadFile(file, from: contactKey)
+                                } label: { Image(systemName: "arrow.down.circle") }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            p2p.configure(sharedFolder: store.config.sharedFolder, downloadBase: store.mirrorRootURL.path)
+        }
     }
 }
 
@@ -1938,7 +2015,11 @@ struct SettingsContent: View {
                         get: { store.config.experimentalP2P ?? false },
                         set: { on in
                             store.config.experimentalP2P = on
-                            if on { p2p.enable(displayName: store.config.myName) } else { p2p.disable() }
+                            if on {
+                                p2p.enable(displayName: store.config.myName)
+                                p2p.configure(sharedFolder: store.config.sharedFolder,
+                                              downloadBase: store.mirrorRootURL.path)
+                            } else { p2p.disable() }
                         }
                     ))
                     .toggleStyle(.switch)

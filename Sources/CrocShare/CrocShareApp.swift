@@ -76,6 +76,8 @@ struct CrocShareApp: App {
                     engine.start()
                     if store.config.experimentalP2P ?? false {
                         p2p.enable(displayName: store.config.myName)
+                        p2p.configure(sharedFolder: store.config.sharedFolder,
+                                      downloadBase: store.mirrorRootURL.path)
                     }
                 }
         }
