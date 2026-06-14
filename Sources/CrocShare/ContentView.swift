@@ -41,6 +41,7 @@ struct ContentView: View {
     @State private var mainTab: MainTab = .chat
     @State private var showPairing = false
     @State private var showNewChannel = false
+    @State private var showInfo = true
 
     private var selectedChannel: P2PEngine.P2PChannel? {
         guard let s = selection, s.hasPrefix("chan:"), let id = UUID(uuidString: String(s.dropFirst(5)))
@@ -101,11 +102,28 @@ struct ContentView: View {
                 }
             }
         } detail: {
-            detailContent
+            HStack(spacing: 0) {
+                detailContent.frame(maxWidth: .infinity, maxHeight: .infinity)
+                if showInfo, let key = selection, p2p.contacts.contains(key), selectedChannel == nil {
+                    Divider()
+                    ProfilePanel(contactKey: key, openTab: { mainTab = $0 })
+                        .frame(width: 300)
+                }
+            }
+            .toolbar {
+                if let key = selection, p2p.contacts.contains(key), selectedChannel == nil {
+                    ToolbarItem {
+                        Button { withAnimation(.easeInOut(duration: 0.22)) { showInfo.toggle() } } label: {
+                            Image(systemName: showInfo ? "sidebar.trailing" : "sidebar.right")
+                        }
+                        .help("Panneau d'infos du contact")
+                    }
+                }
+            }
         }
         .sheet(isPresented: $showPairing) { P2PPairingSheet() }
         .sheet(isPresented: $showNewChannel) { P2PChannelSheet(existing: nil) }
-        .frame(minWidth: 820, minHeight: 540)
+        .frame(minWidth: 900, minHeight: 560)
     }
 
     @ViewBuilder
@@ -307,19 +325,10 @@ struct P2PChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                AvatarView(name: p2p.name(for: contactKey),
-                           id: P2PEngine.uuid(forKey: contactKey), size: 30)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(p2p.name(for: contactKey)).font(.headline)
-                    Text(p2p.isOnline(contactKey) ? "en ligne · P2P chiffré" : "hors ligne")
-                        .font(.caption)
-                        .foregroundStyle(p2p.isOnline(contactKey) ? Color.green : .secondary)
-                }
-                Spacer()
-                Image(systemName: "lock.fill").foregroundStyle(.secondary).help("Bout-à-bout, sans relai")
-            }
-            .padding(.horizontal).padding(.vertical, 10)
+            ConversationHeaderBar(title: p2p.name(for: contactKey),
+                                  online: p2p.isOnline(contactKey),
+                                  avatarID: P2PEngine.uuid(forKey: contactKey),
+                                  subtitle: p2p.isOnline(contactKey) ? "en ligne · chiffré P2P" : "hors ligne")
             Divider()
 
             P2PTranscript(messages: messages, contactKey: contactKey)
@@ -330,11 +339,45 @@ struct P2PChatView: View {
                            onAttach: { p2p.send("", attachment: $0, to: contactKey) })
             if !p2p.isOnline(contactKey) {
                 Text("Hors ligne — le message partira dès que \(p2p.name(for: contactKey)) sera connecté.")
-                    .font(.caption).foregroundStyle(.orange).padding(.bottom, 6)
+                    .font(Theme.small).foregroundStyle(Theme.away).padding(.bottom, 6)
             }
         }
+        .background(Theme.bgApp)
+        .fileDropZone(scope: p2p.name(for: contactKey)) { p2p.send("", attachment: $0, to: contactKey) }
         .onAppear { p2p.markRead(contactKey) }
         .onChange(of: messages.count) { _ in p2p.markRead(contactKey) }
+    }
+}
+
+/// En-tête de conversation/salon : avatar (ou icône) + titre + sous-titre présence.
+struct ConversationHeaderBar: View {
+    var title: String
+    var online: Bool
+    var avatarID: UUID?
+    var icon: String?
+    var subtitle: String
+    var trailing: AnyView?
+
+    var body: some View {
+        HStack(spacing: Theme.Space.md) {
+            if let avatarID {
+                AvatarView(name: title, id: avatarID, size: 38)
+                    .overlay(alignment: .bottomTrailing) { PresenceDot(online: online).offset(x: 1, y: 1) }
+            } else if let icon {
+                Image(systemName: icon).font(.title2).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(Theme.surfaceAlt))
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(Theme.h2).foregroundStyle(Theme.textPrimary)
+                Text(subtitle).font(Theme.small)
+                    .foregroundStyle(online ? Theme.success : Theme.textSecondary)
+            }
+            Spacer()
+            if let trailing { trailing }
+        }
+        .padding(.horizontal, Theme.Space.lg).padding(.vertical, Theme.Space.md)
+        .background(Theme.surface)
     }
 }
 
@@ -415,8 +458,9 @@ struct P2PFilesView: View {
                             P2PFileCard(file: file, contactKey: contactKey)
                         }
                     }
-                    .padding(16)
+                    .padding(Theme.Space.lg)
                 }
+                .background(Theme.bgApp)
             }
         }
         .onAppear {
@@ -625,21 +669,12 @@ struct P2PChannelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "number.square.fill").font(.title2).foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(channel.name).font(.headline)
-                    Text(members.map { p2p.name(for: $0) }.joined(separator: ", "))
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-                if channel.createdBy == p2p.myPublicKey {
-                    Button { showMembers = true } label: {
-                        Label("Membres", systemImage: "person.badge.plus")
-                    }
-                }
-            }
-            .padding(.horizontal).padding(.vertical, 10)
+            ConversationHeaderBar(
+                title: channel.name, online: false, avatarID: nil, icon: "number.square.fill",
+                subtitle: members.map { p2p.name(for: $0) }.joined(separator: ", "),
+                trailing: channel.createdBy == p2p.myPublicKey
+                    ? AnyView(Button { showMembers = true } label: { Label("Membres", systemImage: "person.badge.plus") })
+                    : nil)
             Divider()
             P2PTranscript(messages: messages, contactKey: nil)
             Divider()
@@ -648,6 +683,8 @@ struct P2PChannelView: View {
                            onSendText: { p2p.sendChannelMessage($0, in: channel) },
                            onAttach: { p2p.sendChannelMessage("", attachment: $0, in: channel) })
         }
+        .background(Theme.bgApp)
+        .fileDropZone(scope: channel.name) { p2p.sendChannelMessage("", attachment: $0, in: channel) }
         .onAppear { p2p.markChannelRead(channel.id) }
         .onChange(of: messages.count) { _ in p2p.markChannelRead(channel.id) }
         .sheet(isPresented: $showMembers) { P2PChannelSheet(existing: channel) }
@@ -693,6 +730,94 @@ struct P2PChannelSheet: View {
         }
         .padding(24).frame(width: 380)
         .onAppear { if let ex = existing { name = ex.name; selected = Set(ex.memberKeys.filter { $0 != p2p.myPublicKey }) } }
+    }
+}
+
+/// Panneau de détails du contact (3e colonne) : profil, présence, identité,
+/// fichiers partagés — façon Slack/kDrive.
+struct ProfilePanel: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @EnvironmentObject var store: AppStore
+    let contactKey: String
+    var openTab: (MainTab) -> Void
+
+    var files: [RemoteFile] { p2p.remoteFiles[contactKey] ?? [] }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: Theme.Space.lg) {
+                AvatarView(name: p2p.name(for: contactKey), id: P2PEngine.uuid(forKey: contactKey), size: 76)
+                    .overlay(alignment: .bottomTrailing) {
+                        PresenceDot(online: p2p.isOnline(contactKey), size: 16).offset(x: 2, y: 2)
+                    }
+                    .padding(.top, Theme.Space.lg)
+                VStack(spacing: 2) {
+                    Text(p2p.name(for: contactKey)).font(Theme.h2).foregroundStyle(Theme.textPrimary)
+                    Text(p2p.isOnline(contactKey) ? "en ligne · P2P chiffré" : "hors ligne")
+                        .font(Theme.small)
+                        .foregroundStyle(p2p.isOnline(contactKey) ? Theme.success : Theme.textSecondary)
+                }
+                HStack(spacing: Theme.Space.sm) {
+                    panelButton("Chat", "bubble.left") { openTab(.chat) }
+                    panelButton("Fichiers", "folder") { openTab(.files) }
+                }
+
+                Divider()
+                VStack(alignment: .leading, spacing: Theme.Space.sm) {
+                    Text("À PROPOS").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                    infoRow("Identité", String(contactKey.prefix(22)) + "…")
+                    infoRow("Fichiers partagés", "\(files.count)")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if !files.isEmpty {
+                    VStack(alignment: .leading, spacing: Theme.Space.sm) {
+                        HStack {
+                            Text("FICHIERS").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                            Spacer()
+                            Button("Tout voir") { openTab(.files) }.font(Theme.small).buttonStyle(.plain)
+                                .foregroundStyle(Theme.accent)
+                        }
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 66), spacing: 8)], spacing: 8) {
+                            ForEach(files.prefix(9)) { f in
+                                RoundedRectangle(cornerRadius: 10).fill(Theme.surfaceAlt)
+                                    .frame(height: 56)
+                                    .overlay(Image(systemName: fileIcon(f.path)).foregroundStyle(Theme.textSecondary))
+                                    .help(f.name)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(Theme.Space.lg)
+        }
+        .frame(maxHeight: .infinity)
+        .background(Theme.surface)
+    }
+
+    private func infoRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).font(Theme.small).foregroundStyle(Theme.textSecondary)
+            Spacer()
+            Text(value).font(Theme.small).foregroundStyle(Theme.textPrimary)
+                .lineLimit(1).truncationMode(.middle)
+        }
+    }
+    private func panelButton(_ label: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) { Image(systemName: icon); Text(label).font(Theme.tiny) }
+                .frame(maxWidth: .infinity).padding(.vertical, Theme.Space.sm)
+                .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(Theme.surfaceAlt))
+        }
+        .buttonStyle(.plain).foregroundStyle(Theme.textPrimary)
+    }
+    private func fileIcon(_ path: String) -> String {
+        let e = (path as NSString).pathExtension.lowercased()
+        if ["png","jpg","jpeg","gif","heic","webp","tiff"].contains(e) { return "photo" }
+        switch e { case "mp4","mov","m4v": return "play.rectangle"; case "pdf": return "doc.richtext"
+        case "riv": return "sparkles"; default: return "doc" }
     }
 }
 
