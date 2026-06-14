@@ -318,10 +318,12 @@ struct P2PChatView: View {
     @EnvironmentObject var p2p: P2PEngine
     let contactKey: String
     @State private var draft = ""
+    @State private var threadRoot: P2PEngine.P2PMessage?
 
-    var messages: [P2PEngine.P2PMessage] {
+    var allMessages: [P2PEngine.P2PMessage] {
         (p2p.chats[contactKey] ?? []).filter { $0.channel == nil }.sorted { $0.date < $1.date }
     }
+    var messages: [P2PEngine.P2PMessage] { allMessages }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -331,7 +333,8 @@ struct P2PChatView: View {
                                   subtitle: p2p.isOnline(contactKey) ? "en ligne · chiffré P2P" : "hors ligne")
             Divider()
 
-            P2PTranscript(messages: messages, contactKey: contactKey)
+            P2PTranscript(messages: messages, contactKey: contactKey,
+                          targets: [contactKey], onOpenThread: { threadRoot = $0 })
             Divider()
             P2PComposerBar(placeholder: "Message P2P à \(p2p.name(for: contactKey))…",
                            scope: p2p.name(for: contactKey),
@@ -344,6 +347,12 @@ struct P2PChatView: View {
         }
         .background(Theme.bgApp)
         .fileDropZone(scope: p2p.name(for: contactKey)) { p2p.send("", attachment: $0, to: contactKey) }
+        .sheet(item: $threadRoot) { root in
+            P2PThreadSheet(root: root, replies: allMessages.filter { $0.replyTo == root.id },
+                           targets: [contactKey], scope: p2p.name(for: contactKey),
+                           onSend: { p2p.send($0, to: contactKey, replyTo: root.id) },
+                           onAttach: { p2p.send("", attachment: $0, to: contactKey, replyTo: root.id) })
+        }
         .onAppear { p2p.markRead(contactKey) }
         .onChange(of: messages.count) { _ in p2p.markRead(contactKey) }
     }
@@ -384,30 +393,45 @@ struct ConversationHeaderBar: View {
 /// Liste de messages P2P (jours + groupage), réutilisée par chat direct et salon.
 struct P2PTranscript: View {
     @EnvironmentObject var p2p: P2PEngine
-    let messages: [P2PEngine.P2PMessage]
-    var contactKey: String? = nil   // nil = salon (afficher les noms)
+    let messages: [P2PEngine.P2PMessage]   // tous les messages (racines + réponses)
+    var contactKey: String? = nil          // nil = salon (afficher les noms)
+    var targets: [String] = []             // pairs à notifier (réactions)
+    var onOpenThread: (P2PEngine.P2PMessage) -> Void = { _ in }
+
+    private var topLevel: [P2PEngine.P2PMessage] { messages.filter { $0.replyTo == nil } }
+    private var replyInfo: [UUID: (count: Int, last: Date)] {
+        var d: [UUID: (Int, Date)] = [:]
+        for m in messages where m.replyTo != nil {
+            let k = m.replyTo!
+            if let e = d[k] { d[k] = (e.0 + 1, max(e.1, m.date)) } else { d[k] = (1, m.date) }
+        }
+        return d
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(p2pDays(messages), id: \.date) { day in
+                    ForEach(p2pDays(topLevel), id: \.date) { day in
                         DayDivider(date: day.date)
                         ForEach(Array(day.messages.enumerated()), id: \.element.id) { idx, m in
                             let prev = idx > 0 ? day.messages[idx - 1] : nil
                             let grouped = prev != nil && prev!.fromMe == m.fromMe
                                 && prev!.fromName == m.fromName
                                 && m.date.timeIntervalSince(prev!.date) < 300
-                            P2PRow(message: m, contactKey: contactKey, showHeader: !grouped)
+                            let info = replyInfo[m.id]
+                            P2PRow(message: m, contactKey: contactKey, showHeader: !grouped,
+                                   targets: targets, replyCount: info?.count ?? 0,
+                                   lastReply: info?.last, onOpenThread: { onOpenThread(m) })
                                 .id(m.id)
                         }
                     }
                 }
                 .padding(.vertical, 6)
             }
-            .onAppear { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
-            .onChange(of: messages.count) { _ in
-                withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+            .onAppear { proxy.scrollTo(topLevel.last?.id, anchor: .bottom) }
+            .onChange(of: topLevel.count) { _ in
+                withAnimation { proxy.scrollTo(topLevel.last?.id, anchor: .bottom) }
             }
         }
     }
@@ -560,6 +584,15 @@ struct P2PRow: View {
     let message: P2PEngine.P2PMessage
     var contactKey: String? = nil
     let showHeader: Bool
+    var targets: [String] = []
+    var replyCount: Int = 0
+    var lastReply: Date? = nil
+    var onOpenThread: () -> Void = {}
+    var inThread: Bool = false       // dans le panneau de fil : pas de bouton « N réponses »
+    @State private var hovering = false
+    @State private var showPicker = false
+
+    static let quickEmojis = ["👍", "❤️", "😂", "🎉", "👀", "✅", "🙏", "🔥"]
 
     var senderKey: String { message.fromKey ?? contactKey ?? "" }
     var displayName: String { message.fromMe ? (p2p.myName.isEmpty ? "Moi" : p2p.myName) : message.fromName }
@@ -570,6 +603,9 @@ struct P2PRow: View {
         (try? AttributedString(markdown: message.text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(message.text)
+    }
+    var reacts: [(emoji: String, count: Int)] {
+        (p2p.reactions[message.id] ?? [:]).map { ($0.key, $0.value.count) }.sorted { $0.emoji < $1.emoji }
     }
 
     var body: some View {
@@ -600,10 +636,66 @@ struct P2PRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                if !reacts.isEmpty {
+                    HStack(spacing: 5) {
+                        ForEach(reacts, id: \.emoji) { r in
+                            let mine = p2p.iReacted(r.emoji, to: message.id)
+                            Button { p2p.toggleReaction(r.emoji, on: message, targets: targets) } label: {
+                                HStack(spacing: 3) { Text(r.emoji); Text("\(r.count)").font(Theme.tiny) }
+                                    .padding(.horizontal, 7).padding(.vertical, 2)
+                                    .background(Capsule().fill(mine ? Theme.accent.opacity(0.18) : Theme.surfaceAlt))
+                                    .overlay(Capsule().stroke(mine ? Theme.accent : .clear, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                if replyCount > 0 && !inThread {
+                    Button(action: onOpenThread) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "bubble.left.and.bubble.right.fill").font(.caption2)
+                            Text("\(replyCount) réponse\(replyCount > 1 ? "s" : "")").font(.caption.bold())
+                            if let d = lastReply {
+                                Text("· \(relativeDay(d))").font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 8).stroke(Theme.separator))
+                    }
+                    .buttonStyle(.plain).padding(.top, 1)
+                }
             }
             Spacer(minLength: 0)
+            // Barre d'actions au survol (réagir / répondre dans un fil).
+            if hovering {
+                HStack(spacing: 2) {
+                    Button { showPicker = true } label: { Image(systemName: "face.smiling") }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showPicker, arrowEdge: .top) {
+                            HStack(spacing: 4) {
+                                ForEach(Self.quickEmojis, id: \.self) { e in
+                                    Button { p2p.toggleReaction(e, on: message, targets: targets); showPicker = false }
+                                        label: { Text(e).font(.title3) }
+                                        .buttonStyle(.plain)
+                                }
+                            }.padding(8)
+                        }
+                        .help("Réagir")
+                    if !inThread {
+                        Button(action: onOpenThread) { Image(systemName: "arrowshape.turn.up.left") }
+                            .buttonStyle(.plain).help("Répondre dans un fil")
+                    }
+                }
+                .foregroundStyle(Theme.textSecondary)
+                .padding(4)
+                .background(Capsule().fill(Theme.surface).shadow(color: .black.opacity(0.08), radius: 3))
+                .padding(.trailing, 8)
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, showHeader ? 4 : 1)
+        .background(hovering ? Theme.hover.opacity(0.5) : .clear)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -663,6 +755,7 @@ struct P2PChannelView: View {
     @EnvironmentObject var p2p: P2PEngine
     let channel: P2PEngine.P2PChannel
     @State private var showMembers = false
+    @State private var threadRoot: P2PEngine.P2PMessage?
 
     var members: [String] { channel.memberKeys }
     var messages: [P2PEngine.P2PMessage] { p2p.messages(in: channel) }
@@ -676,7 +769,8 @@ struct P2PChannelView: View {
                     ? AnyView(Button { showMembers = true } label: { Label("Membres", systemImage: "person.badge.plus") })
                     : nil)
             Divider()
-            P2PTranscript(messages: messages, contactKey: nil)
+            P2PTranscript(messages: messages, contactKey: nil,
+                          targets: channel.memberKeys, onOpenThread: { threadRoot = $0 })
             Divider()
             P2PComposerBar(placeholder: "Message dans #\(channel.name)…",
                            scope: channel.name,
@@ -688,6 +782,58 @@ struct P2PChannelView: View {
         .onAppear { p2p.markChannelRead(channel.id) }
         .onChange(of: messages.count) { _ in p2p.markChannelRead(channel.id) }
         .sheet(isPresented: $showMembers) { P2PChannelSheet(existing: channel) }
+        .sheet(item: $threadRoot) { root in
+            P2PThreadSheet(root: root, replies: messages.filter { $0.replyTo == root.id },
+                           targets: channel.memberKeys, scope: channel.name,
+                           onSend: { p2p.sendChannelMessage($0, in: channel, replyTo: root.id) },
+                           onAttach: { p2p.sendChannelMessage("", attachment: $0, in: channel, replyTo: root.id) })
+        }
+    }
+}
+
+/// Panneau d'un fil de discussion (réponses à un message).
+struct P2PThreadSheet: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @Environment(\.dismiss) var dismiss
+    let root: P2PEngine.P2PMessage
+    let replies: [P2PEngine.P2PMessage]
+    let targets: [String]
+    let scope: String
+    var onSend: (String) -> Void
+    var onAttach: (P2PEngine.P2PAttachment) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Fil de discussion").font(Theme.h2)
+                Spacer()
+                Button("Fermer") { dismiss() }
+            }
+            .padding(Theme.Space.lg)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    P2PRow(message: root, contactKey: targets.first, showHeader: true,
+                           targets: targets, inThread: true)
+                    HStack(spacing: 8) {
+                        Text("\(replies.count) réponse\(replies.count > 1 ? "s" : "")")
+                            .font(Theme.small).foregroundStyle(Theme.textSecondary)
+                        Rectangle().frame(height: 1).foregroundStyle(Theme.separator)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    ForEach(replies.sorted { $0.date < $1.date }) { r in
+                        P2PRow(message: r, contactKey: targets.first, showHeader: true,
+                               targets: targets, inThread: true)
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+            Divider()
+            P2PComposerBar(placeholder: "Répondre…", scope: scope,
+                           onSendText: onSend, onAttach: onAttach)
+        }
+        .frame(width: 480, height: 580)
+        .background(Theme.bgApp)
     }
 }
 

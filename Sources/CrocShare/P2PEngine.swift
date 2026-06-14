@@ -48,6 +48,8 @@ final class P2PEngine: ObservableObject {
         var attachment: P2PAttachment? = nil
         /// Clé z32 de l'expéditeur (pour télécharger les pièces jointes de salon).
         var fromKey: String? = nil
+        /// Réponse en fil : id du message parent. nil = message racine.
+        var replyTo: UUID? = nil
     }
 
     /// Salon façon Slack : un nom + des membres (clés P2P).
@@ -89,6 +91,8 @@ final class P2PEngine: ObservableObject {
     @Published var pairingState: PairingState = .idle
     @Published var channels: [P2PChannel] = [] { didSet { saveChannels() } }
     @Published var channelUnread: [UUID: Int] = [:]
+    /// Réactions par message : id message → emoji → clés des réacteurs.
+    @Published var reactions: [UUID: [String: [String]]] = [:]
 
     var myName: String = ""
     var sharedFolder: String?
@@ -102,9 +106,14 @@ final class P2PEngine: ObservableObject {
     private var chatsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-chats.json") }
     private var namesURL: URL { AppStore.supportDir.appendingPathComponent("p2p-names.json") }
     private var channelsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-channels.json") }
+    private var reactionsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-reactions.json") }
 
     private func saveChannels() {
         if let data = try? JSONEncoder().encode(channels) { try? data.write(to: channelsURL) }
+    }
+    private func saveReactions() {
+        let mapped = Dictionary(uniqueKeysWithValues: reactions.map { ($0.key.uuidString, $0.value) })
+        if let data = try? JSONEncoder().encode(mapped) { try? data.write(to: reactionsURL) }
     }
 
     init() {
@@ -112,6 +121,12 @@ final class P2PEngine: ObservableObject {
         if let data = try? Data(contentsOf: channelsURL),
            let list = try? dec.decode([P2PChannel].self, from: data) {
             channels = list
+        }
+        if let data = try? Data(contentsOf: reactionsURL),
+           let map = try? dec.decode([String: [String: [String]]].self, from: data) {
+            reactions = Dictionary(uniqueKeysWithValues: map.compactMap { k, v in
+                UUID(uuidString: k).map { ($0, v) }
+            })
         }
         if let data = try? Data(contentsOf: chatsURL),
            let map = try? dec.decode([String: [P2PMessage]].self, from: data) {
@@ -256,11 +271,23 @@ final class P2PEngine: ObservableObject {
                let chan = try? JSONDecoder().decode(P2PChannel.self, from: d) {
                 ingestChannel(chan)
             }
+        case "react":
+            guard let idStr = payload["id"] as? String, let id = UUID(uuidString: idStr),
+                  let emoji = payload["emoji"] as? String else { return }
+            let add = payload["add"] as? Bool ?? true
+            var byEmoji = reactions[id] ?? [:]
+            var reactors = byEmoji[emoji] ?? []
+            if add { if !reactors.contains(key) { reactors.append(key) } }
+            else { reactors.removeAll { $0 == key } }
+            byEmoji[emoji] = reactors.isEmpty ? nil : reactors
+            reactions[id] = byEmoji.isEmpty ? nil : byEmoji
+            saveReactions()
         case "msg":
             guard let idStr = payload["id"] as? String, let id = UUID(uuidString: idStr) else { return }
             let text = payload["t"] as? String ?? ""
             let date = (payload["ts"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
             let ch = (payload["ch"] as? String).flatMap { UUID(uuidString: $0) }
+            let rt = (payload["rt"] as? String).flatMap { UUID(uuidString: $0) }
             var att: P2PAttachment?
             if let a = payload["att"] as? [String: Any], let fn = a["fileName"] as? String,
                let rp = a["relPath"] as? String {
@@ -271,7 +298,7 @@ final class P2PEngine: ObservableObject {
             if !thread.contains(where: { $0.id == id }) {
                 thread.append(P2PMessage(id: id, fromMe: false, fromName: name(for: key),
                                          text: text, date: date, delivered: true,
-                                         channel: ch, attachment: att, fromKey: key))
+                                         channel: ch, attachment: att, fromKey: key, replyTo: rt))
                 thread.sort { $0.date < $1.date }
                 chats[key] = thread
                 if let ch { channelUnread[ch, default: 0] += 1 } else { unread[key, default: 0] += 1 }
@@ -297,19 +324,20 @@ final class P2PEngine: ObservableObject {
         }
     }
 
-    func send(_ text: String, attachment: P2PAttachment? = nil, to key: String) {
+    func send(_ text: String, attachment: P2PAttachment? = nil, to key: String, replyTo: UUID? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || attachment != nil else { return }
         let msg = P2PMessage(id: UUID(), fromMe: true, fromName: myName,
                              text: trimmed, date: Date(), delivered: false,
-                             attachment: attachment, fromKey: myPublicKey)
+                             attachment: attachment, fromKey: myPublicKey, replyTo: replyTo)
         chats[key, default: []].append(msg)
         deliver(msg, to: key)
     }
 
     /// Message de salon : même id partagé, déposé dans le fil de chaque membre
     /// (réutilise la file d'attente/accusés du chat direct ; vue salon dédupe par id).
-    func sendChannelMessage(_ text: String, attachment: P2PAttachment? = nil, in channel: P2PChannel) {
+    func sendChannelMessage(_ text: String, attachment: P2PAttachment? = nil, in channel: P2PChannel,
+                            replyTo: UUID? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || attachment != nil else { return }
         let id = UUID()
@@ -317,7 +345,7 @@ final class P2PEngine: ObservableObject {
         for memberKey in channel.memberKeys where memberKey != myPublicKey {
             let msg = P2PMessage(id: id, fromMe: true, fromName: myName, text: trimmed,
                                  date: now, delivered: false, channel: channel.id,
-                                 attachment: attachment, fromKey: myPublicKey)
+                                 attachment: attachment, fromKey: myPublicKey, replyTo: replyTo)
             chats[memberKey, default: []].append(msg)
             deliver(msg, to: memberKey)
         }
@@ -329,6 +357,7 @@ final class P2PEngine: ObservableObject {
             "ts": msg.date.timeIntervalSince1970 * 1000
         ]
         if let ch = msg.channel { payload["ch"] = ch.uuidString }
+        if let rt = msg.replyTo { payload["rt"] = rt.uuidString }
         if let a = msg.attachment {
             payload["att"] = ["fileName": a.fileName, "relPath": a.relPath, "size": a.size]
         }
@@ -336,6 +365,28 @@ final class P2PEngine: ObservableObject {
             _ = try? await bridge?.request("peer.send", ["contactKey": key, "payload": payload])
             // Délivré confirmé par l'ack ; sinon renvoyé à la prochaine connexion.
         }
+    }
+
+    // MARK: - Réactions emoji
+
+    /// (Dé)réagit à un message et propage aux pairs concernés.
+    func toggleReaction(_ emoji: String, on message: P2PMessage, targets: [String]) {
+        var byEmoji = reactions[message.id] ?? [:]
+        var reactors = byEmoji[emoji] ?? []
+        let add: Bool
+        if reactors.contains(myPublicKey) { reactors.removeAll { $0 == myPublicKey }; add = false }
+        else { reactors.append(myPublicKey); add = true }
+        byEmoji[emoji] = reactors.isEmpty ? nil : reactors
+        reactions[message.id] = byEmoji.isEmpty ? nil : byEmoji
+        saveReactions()
+        let payload: [String: Any] = ["k": "react", "id": message.id.uuidString, "emoji": emoji, "add": add]
+        for key in targets where key != myPublicKey {
+            Task { try? await bridge?.request("peer.send", ["contactKey": key, "payload": payload]) }
+        }
+    }
+
+    func iReacted(_ emoji: String, to id: UUID) -> Bool {
+        reactions[id]?[emoji]?.contains(myPublicKey) ?? false
     }
 
     /// Renvoie les messages non encore confirmés à un pair qui vient de se connecter.
