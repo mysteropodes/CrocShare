@@ -5,19 +5,24 @@
 // on s'en sert directement pour identifier le contact (cf. §6 du brief).
 const b4a = require('b4a')
 const os = require('os')
+const fs = require('fs')
+const path = require('path')
 
 const PING_INTERVAL = 25000 // keep-alive applicatif
 const PING_TIMEOUT = 60000  // sans pong au-delà → on coupe, Hyperswarm reconnecte
+const FILE_CHUNK = 256 * 1024 // taille de chunk pour le transfert de fichiers
 
 class PeerManager {
-  constructor ({ swarm, emit, log, isContact, onUnknownPeer, encodeKey }) {
+  constructor ({ swarm, emit, log, isContact, onUnknownPeer, encodeKey, incomingDir }) {
     this.swarm = swarm
     this.emit = emit
     this.log = log
     this.isContact = isContact        // (keyHex) => bool
     this.onUnknownPeer = onUnknownPeer // (keyHex, conn, name, info) => void  (appairage)
     this.encodeKey = encodeKey         // (hex) => z32
+    this.incomingDir = incomingDir     // dossier des fichiers reçus (temp)
     this.peers = new Map()             // keyHex -> { conn, name, direct, lastPong, timer }
+    this.incoming = new Map()          // reqId -> { ws, tmpPath, relPath, size }
     this.displayName = os.hostname()
   }
 
@@ -54,7 +59,59 @@ class PeerManager {
       case 'app':
         this.emit('peer.message', { contactKey: this.encodeKey(remoteKey), payload: msg.payload })
         break
+      case 'f-begin': this._fileBegin(remoteKey, msg); break
+      case 'f-chunk': this._fileChunk(msg); break
+      case 'f-end': this._fileEnd(remoteKey, msg); break
     }
+  }
+
+  // ---- Réception de fichier (écrit dans un temp, émet à la fin) ----
+
+  _fileBegin (remoteKey, msg) {
+    try { fs.mkdirSync(this.incomingDir, { recursive: true }) } catch {}
+    const tmpPath = path.join(this.incomingDir, msg.reqId + '.part')
+    try { fs.rmSync(tmpPath, { force: true }) } catch {}
+    const ws = fs.createWriteStream(tmpPath)
+    this.incoming.set(msg.reqId, { ws, tmpPath, relPath: msg.relPath, size: msg.size || 0 })
+  }
+
+  _fileChunk (msg) {
+    const inc = this.incoming.get(msg.reqId)
+    if (inc && msg.b64) inc.ws.write(b4a.from(msg.b64, 'base64'))
+  }
+
+  _fileEnd (remoteKey, msg) {
+    const inc = this.incoming.get(msg.reqId)
+    if (!inc) return
+    this.incoming.delete(msg.reqId)
+    inc.ws.end(() => {
+      this.emit('peer.fileReceived', {
+        contactKey: this.encodeKey(remoteKey),
+        reqId: msg.reqId, relPath: inc.relPath, tmpPath: inc.tmpPath, size: inc.size
+      })
+    })
+  }
+
+  // ---- Envoi de fichier (streaming + backpressure) ----
+
+  sendFile (remoteKey, reqId, relPath, absPath) {
+    const peer = this.peers.get(remoteKey)
+    if (!peer) { this.emit('peer.fileSendFailed', { reqId, reason: 'offline' }); return }
+    let size = 0
+    try { size = fs.statSync(absPath).size } catch {
+      this.emit('peer.fileSendFailed', { reqId, reason: 'not-found' }); return
+    }
+    this._write(peer.conn, { type: 'f-begin', reqId, relPath, size })
+    const rs = fs.createReadStream(absPath, { highWaterMark: FILE_CHUNK })
+    rs.on('data', (chunk) => {
+      const ok = this._write(peer.conn, { type: 'f-chunk', reqId, b64: b4a.toString(chunk, 'base64') })
+      if (ok === false) { rs.pause(); peer.conn.once('drain', () => rs.resume()) }
+    })
+    rs.on('end', () => {
+      this._write(peer.conn, { type: 'f-end', reqId, relPath })
+      this.emit('peer.fileSent', { reqId, contactKey: this.encodeKey(remoteKey) })
+    })
+    rs.on('error', () => this.emit('peer.fileSendFailed', { reqId, reason: 'read-error' }))
   }
 
   // Promeut une connexion en connexion-contact active (présence + keep-alive).
@@ -106,7 +163,7 @@ class PeerManager {
   }
 
   _write (conn, obj) {
-    try { conn.write(b4a.from(JSON.stringify(obj) + '\n')) } catch {}
+    try { return conn.write(b4a.from(JSON.stringify(obj) + '\n')) } catch { return false }
   }
 
   // Framing NDJSON sur le flux d'octets : on découpe sur 0x0a (jamais présent

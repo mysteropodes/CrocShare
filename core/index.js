@@ -117,7 +117,8 @@ const methods = {
       log,
       isContact: (keyHex) => core.contacts.has(keyHex),
       onUnknownPeer,
-      encodeKey: (keyHex) => identity.encodeKey(b4a.from(keyHex, 'hex'))
+      encodeKey: (keyHex) => identity.encodeKey(b4a.from(keyHex, 'hex')),
+      incomingDir: path.join(core.storagePath, 'incoming')
     })
     core.peers.setDisplayName(core.displayName)
     core.peers.attach()
@@ -178,6 +179,13 @@ const methods = {
     const keyHex = identity.hex(identity.decodeKey(params.contactKey))
     const delivered = core.peers.send(keyHex, params.payload)
     return { delivered }
+  },
+
+  async 'peer.sendFile' (params) {
+    requireReady()
+    const keyHex = identity.hex(identity.decodeKey(params.contactKey))
+    core.peers.sendFile(keyHex, params.reqId, params.relPath, params.absPath)
+    return { started: true }
   },
 
   async status () {
