@@ -69,28 +69,23 @@ struct CrocShareApp: App {
                 .onAppear {
                     Notifier.requestPermission()
                     UpdateManager.shared.start()
-                    store.crocPath = CrocService.findCroc()
-                    if store.config.hostRelay ?? false {
-                        RelayServer.shared.start()
-                    }
-                    engine.start()
-                    if store.config.experimentalP2P ?? false {
-                        p2p.enable(displayName: store.config.myName)
-                        p2p.configure(sharedFolder: store.config.sharedFolder,
-                                      downloadBase: store.mirrorRootURL.path)
-                    }
+                    // Moteur P2P (Hyperswarm) = moteur principal. croc débranché
+                    // (code conservé en réserve, plus démarré).
+                    p2p.enable(displayName: store.config.myName)
+                    p2p.configure(sharedFolder: store.config.sharedFolder,
+                                  downloadBase: store.mirrorRootURL.path)
                 }
         }
 
         MenuBarExtra {
             MenuBarContent()
                 .environmentObject(store)
+                .environmentObject(p2p)
         } label: {
-            // L'icône affiche le nombre de messages non lus.
-            if store.totalUnread > 0 {
+            if p2p.totalUnread > 0 {
                 HStack(spacing: 2) {
                     Image(systemName: "icloud.and.arrow.down.fill")
-                    Text("\(store.totalUnread)")
+                    Text("\(p2p.totalUnread)")
                 }
             } else {
                 Image(systemName: "icloud.and.arrow.down")
@@ -101,17 +96,14 @@ struct CrocShareApp: App {
 
 struct MenuBarContent: View {
     @EnvironmentObject var store: AppStore
+    @EnvironmentObject var p2p: P2PEngine
     @Environment(\.openWindow) var openWindow
 
     var body: some View {
-        ForEach(store.contacts) { contact in
-            let waiting = store.downloads.filter {
-                $0.contactID == contact.id && ($0.status == .waiting || $0.status == .transferring)
-            }.count
-            Text("\(store.isOnline(contact) ? "🟢" : "⚪️") \(contact.name)"
-                 + (waiting > 0 ? " — \(waiting) en attente" : ""))
+        ForEach(p2p.contacts, id: \.self) { key in
+            Text("\(p2p.isOnline(key) ? "🟢" : "⚪️") \(p2p.name(for: key))")
         }
-        if store.contacts.isEmpty {
+        if p2p.contacts.isEmpty {
             Text("Aucun contact")
         }
         Divider()

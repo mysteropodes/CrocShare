@@ -35,111 +35,40 @@ struct MainTabBar: View {
 }
 
 struct ContentView: View {
-    /// Pseudo-sélection pour la conversation de groupe.
-    static let broadcastID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
-
     @EnvironmentObject var store: AppStore
-    @EnvironmentObject var pairing: PairingService
     @EnvironmentObject var p2p: P2PEngine
-    @State private var selection: UUID?
+    @State private var selection: String?          // clé P2P (z32) du contact
     @State private var mainTab: MainTab = .chat
-    @State private var showPairingSheet = false
-    @State private var showNewChannel = false
-    @State private var showNewRoom = false
-    @State private var newChannelRoom: Room?
+    @State private var showPairing = false
 
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-            MainTabBar(selected: $mainTab)
-            Divider()
-            List(selection: $selection) {
-                if !store.contacts.isEmpty {
-                    Section("Groupe") {
-                        Label("Tous les contacts", systemImage: "person.3")
-                            .tag(Self.broadcastID)
-                    }
-                    // Rooms façon Slack : chaque room contient ses canaux.
-                    ForEach(store.rooms) { room in
-                        Section {
-                            ForEach(store.channels.filter { $0.roomID == room.id }) { channel in
-                                ChannelRow(channel: channel, selection: $selection)
-                            }
-                            if room.createdBy == store.config.myID {
-                                Button {
-                                    newChannelRoom = room
-                                    showNewChannel = true
-                                } label: {
-                                    Label("Nouveau canal…", systemImage: "plus.circle")
-                                        .font(.caption)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        } header: {
-                            HStack {
-                                Label(room.name, systemImage: "building.2")
-                                Spacer()
-                            }
-                            .contextMenu {
-                                if room.createdBy == store.config.myID {
-                                    Button("Supprimer la room", role: .destructive) {
-                                        store.removeRoom(room.id)
+                MainTabBar(selected: $mainTab)
+                Divider()
+                List(selection: $selection) {
+                    Section("Contacts") {
+                        ForEach(p2p.contacts, id: \.self) { key in
+                            P2PContactRow(contactKey: key)
+                                .tag(key)
+                                .contextMenu {
+                                    Button("Supprimer le contact", role: .destructive) {
+                                        p2p.removeContact(key)
+                                        if selection == key { selection = nil }
                                     }
                                 }
-                            }
                         }
-                    }
-                    Section("Canaux") {
-                        ForEach(store.channels.filter { $0.roomID == nil }) { channel in
-                            ChannelRow(channel: channel, selection: $selection)
-                        }
-                        Button {
-                            newChannelRoom = nil
-                            showNewChannel = true
-                        } label: {
-                            Label("Nouveau canal…", systemImage: "plus.circle")
-                        }
-                        .buttonStyle(.plain)
-                        Button {
-                            showNewRoom = true
-                        } label: {
-                            Label("Nouvelle room…", systemImage: "building.2.crop.circle.badge.plus")
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                Section("Contacts") {
-                    ForEach(store.contacts) { contact in
-                        ContactRow(contact: contact)
-                            .tag(contact.id)
-                            .contextMenu {
-                                Button("Supprimer le contact", role: .destructive) {
-                                    store.removeContact(contact.id)
-                                    if selection == contact.id { selection = nil }
-                                }
-                            }
-                    }
-                }
-                if (store.config.experimentalP2P ?? false), !p2p.contacts.isEmpty {
-                    Section("P2P (test)") {
-                        ForEach(p2p.contacts, id: \.self) { key in
-                            HStack {
-                                Circle().fill(p2p.isOnline(key) ? Color.green : Color.gray.opacity(0.5))
-                                    .frame(width: 8, height: 8)
-                                Text(p2p.name(for: key))
-                                Spacer()
-                                UnreadBadge(count: p2p.unread[key] ?? 0)
-                            }
-                            .tag(P2PEngine.uuid(forKey: key))
+                        if p2p.contacts.isEmpty {
+                            Text("Aucun contact").foregroundStyle(.secondary).font(.caption)
                         }
                     }
                 }
+                .listStyle(.sidebar)
             }
-            }
-            .navigationSplitViewColumnWidth(min: 210, ideal: 240)
+            .navigationSplitViewColumnWidth(min: 220, ideal: 250)
             .toolbar {
                 ToolbarItem {
-                    Button { showPairingSheet = true } label: {
+                    Button { showPairing = true } label: {
                         Label("Ajouter un contact", systemImage: "person.badge.plus")
                     }
                 }
@@ -147,52 +76,126 @@ struct ContentView: View {
         } detail: {
             detailContent
         }
-        .sheet(isPresented: $showPairingSheet, onDismiss: { pairing.cancel() }) {
-            PairingSheet()
-        }
-        .sheet(isPresented: $showNewChannel) {
-            NewChannelSheet(room: newChannelRoom)
-        }
-        .sheet(isPresented: $showNewRoom) {
-            NewRoomSheet()
-        }
-        .frame(minWidth: 820, minHeight: 520)
+        .sheet(isPresented: $showPairing) { P2PPairingSheet() }
+        .frame(minWidth: 820, minHeight: 540)
     }
 
-    /// Contenu de droite selon l'onglet principal et la sélection latérale.
     @ViewBuilder
     private var detailContent: some View {
         switch mainTab {
         case .config:
             ConfigTab()
         case .chat:
-            if let id = selection, let key = p2pKey(for: id) {
+            if let key = selection, p2p.contacts.contains(key) {
                 P2PChatView(contactKey: key)
-            } else if selection == Self.broadcastID {
-                GroupChatView()
-            } else if let id = selection, let channel = store.channels.first(where: { $0.id == id }) {
-                ChannelChatView(channel: channel)
-            } else if let id = selection, let contact = store.contacts.first(where: { $0.id == id }) {
-                ConversationView(contact: contact)
             } else {
-                WelcomeView(showPairingSheet: $showPairingSheet, openConfig: { mainTab = .config })
+                WelcomeP2P(showPairing: $showPairing, openConfig: { mainTab = .config })
             }
         case .files:
-            if let id = selection, let key = p2pKey(for: id) {
+            if let key = selection, p2p.contacts.contains(key) {
                 P2PFilesView(contactKey: key)
-            } else if let id = selection, let contact = store.contacts.first(where: { $0.id == id }) {
-                ContactFilesView(contact: contact)
             } else {
                 ContentPlaceholder(icon: "folder",
                                    text: "Sélectionne un contact à gauche pour voir et télécharger ses fichiers.")
             }
         }
     }
+}
 
-    /// Retrouve la clé P2P (z32) correspondant à une sélection (UUID dérivé).
-    private func p2pKey(for id: UUID) -> String? {
-        guard store.config.experimentalP2P ?? false else { return nil }
-        return p2p.contacts.first { P2PEngine.uuid(forKey: $0) == id }
+/// Ligne de contact P2P : avatar + présence + nom + non-lus.
+struct P2PContactRow: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let contactKey: String
+    var body: some View {
+        HStack(spacing: 9) {
+            AvatarView(name: p2p.name(for: contactKey), id: P2PEngine.uuid(forKey: contactKey), size: 26)
+                .overlay(alignment: .bottomTrailing) {
+                    Circle()
+                        .fill(p2p.isOnline(contactKey) ? Color.green : Color.gray.opacity(0.6))
+                        .frame(width: 9, height: 9)
+                        .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
+                }
+            Text(p2p.name(for: contactKey))
+            Spacer()
+            UnreadBadge(count: p2p.unread[contactKey] ?? 0)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// Écran d'accueil (aucun contact sélectionné).
+struct WelcomeP2P: View {
+    @EnvironmentObject var store: AppStore
+    @EnvironmentObject var p2p: P2PEngine
+    @Binding var showPairing: Bool
+    var openConfig: () -> Void
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "bolt.horizontal.circle")
+                .font(.system(size: 56)).foregroundStyle(.secondary)
+            Text("CrocShare").font(.largeTitle.bold())
+            Text("Partage de dossier et chat en pair-à-pair, chiffré de bout en bout,\nsans serveur ni relai.")
+                .multilineTextAlignment(.center).foregroundStyle(.secondary)
+            if store.config.sharedFolder == nil {
+                Button("1. Choisir mon dossier partagé…") { openConfig() }
+                    .buttonStyle(.borderedProminent)
+            }
+            Button(store.config.sharedFolder == nil ? "2. Ajouter un contact…" : "Ajouter un contact…") {
+                showPairing = true
+            }
+            if !p2p.myPublicKey.isEmpty {
+                Text("Mon identité : \(p2p.myPublicKey.prefix(16))…")
+                    .font(.caption2.monospaced()).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(40)
+    }
+}
+
+/// Appairage P2P depuis « Ajouter un contact » (remplace l'appairage croc).
+struct P2PPairingSheet: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @Environment(\.dismiss) var dismiss
+    @State private var mode = 0
+    @State private var joinCode = ""
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Ajouter un contact").font(.title3.bold())
+            Picker("", selection: $mode) {
+                Text("Inviter").tag(0)
+                Text("Rejoindre").tag(1)
+            }.pickerStyle(.segmented)
+
+            if mode == 0 {
+                Text("Génère un code et transmets-le à ton contact (message, oral…). La connexion s'établit automatiquement, chiffrée, sans relai.")
+                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                if p2p.inviteCode.isEmpty {
+                    Button("Générer un code") { p2p.createInvite() }.buttonStyle(.borderedProminent)
+                } else {
+                    HStack {
+                        Text(p2p.inviteCode).font(.system(.title3, design: .monospaced).bold())
+                            .textSelection(.enabled)
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(p2p.inviteCode, forType: .string)
+                        } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.plain)
+                    }
+                    Text("En attente que ton contact saisisse le code…")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Saisis le code que ton contact t'a communiqué.")
+                    .font(.callout).foregroundStyle(.secondary)
+                TextField("cs1-…", text: $joinCode).textFieldStyle(.roundedBorder).frame(width: 260)
+                    .onSubmit { p2p.acceptInvite(joinCode); joinCode = "" }
+                Button("Rejoindre") { p2p.acceptInvite(joinCode); joinCode = "" }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(joinCode.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            Button("Fermer") { dismiss() }
+        }
+        .padding(28).frame(width: 420)
     }
 }
 
@@ -310,40 +313,106 @@ struct P2PFilesView: View {
                         ? "Aucun fichier partagé pour le moment."
                         : "Hors ligne — la liste apparaîtra à la connexion.")
             } else {
-                List {
-                    ForEach(files) { file in
-                        HStack {
-                            Image(systemName: "doc")
-                            VStack(alignment: .leading) {
-                                Text(file.path)
-                                Text(formatBytes(file.size)).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            let pending = pendings.first {
-                                $0.relPath == file.path && ($0.status == .waiting || $0.status == .transferring)
-                            }
-                            if p2p.isDownloaded(file.path, from: contactKey) {
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                            } else if let pending {
-                                if pending.status == .transferring {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Image(systemName: "clock").foregroundStyle(.orange)
-                                }
-                            } else {
-                                Button {
-                                    p2p.downloadFile(file, from: contactKey)
-                                } label: { Image(systemName: "arrow.down.circle") }
-                                .buttonStyle(.plain)
-                            }
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 152, maximum: 210), spacing: 14)],
+                              spacing: 14) {
+                        ForEach(files) { file in
+                            P2PFileCard(file: file, contactKey: contactKey)
                         }
                     }
+                    .padding(16)
                 }
             }
         }
         .onAppear {
             p2p.configure(sharedFolder: store.config.sharedFolder, downloadBase: store.mirrorRootURL.path)
         }
+    }
+}
+
+/// Carte fichier (grille façon « file browser ») : vignette image ou icône de
+/// type, nom, taille, et pastille d'état (téléchargé / en cours / à télécharger).
+struct P2PFileCard: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @EnvironmentObject var store: AppStore
+    let file: RemoteFile
+    let contactKey: String
+
+    var ext: String { (file.path as NSString).pathExtension.lowercased() }
+    var isImage: Bool { ["png", "jpg", "jpeg", "gif", "heic", "webp", "tiff"].contains(ext) }
+    var localURL: URL {
+        store.mirrorRootURL.appendingPathComponent(p2p.name(for: contactKey)).appendingPathComponent(file.path)
+    }
+    var downloaded: Bool { p2p.isDownloaded(file.path, from: contactKey) }
+    var pending: P2PEngine.P2PDownload? {
+        p2p.fileDownloads.first {
+            $0.contactKey == contactKey && $0.relPath == file.path
+                && ($0.status == .waiting || $0.status == .transferring)
+        }
+    }
+    var iconName: String {
+        if isImage { return "photo" }
+        switch ext {
+        case "mp4", "mov", "m4v": return "play.rectangle.fill"
+        case "pdf": return "doc.richtext.fill"
+        case "zip", "rar", "7z": return "doc.zipper"
+        case "riv": return "sparkles"
+        default: return "doc.fill"
+        }
+    }
+    var iconColor: Color {
+        switch ext {
+        case "mp4", "mov", "m4v": return .pink
+        case "pdf": return .red
+        case "riv": return .purple
+        case "zip", "rar", "7z": return .orange
+        default: return .blue
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12).fill(Color.gray.opacity(0.10))
+                if downloaded, isImage, let img = NSImage(contentsOf: localURL) {
+                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Image(systemName: iconName).font(.system(size: 34)).foregroundStyle(iconColor)
+                }
+            }
+            .frame(height: 104)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(alignment: .topTrailing) {
+                Group {
+                    if downloaded {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    } else if let pending {
+                        if pending.status == .transferring { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "clock.fill").foregroundStyle(.orange) }
+                    } else {
+                        Image(systemName: "arrow.down.circle.fill").foregroundStyle(Color.accentColor)
+                    }
+                }
+                .padding(6)
+                .background(Circle().fill(Color(nsColor: .windowBackgroundColor)).opacity(0.9))
+                .padding(6)
+            }
+
+            Text(file.name).font(.callout.weight(.medium)).lineLimit(1)
+            Text(formatBytes(file.size)).font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .shadow(color: .black.opacity(0.06), radius: 5, y: 2)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if downloaded { NSWorkspace.shared.activateFileViewerSelecting([localURL]) }
+            else if pending == nil { p2p.downloadFile(file, from: contactKey) }
+        }
+        .help(downloaded ? "Afficher dans le Finder" : "Télécharger")
     }
 }
 
@@ -1925,7 +1994,10 @@ struct SettingsContent: View {
                         .foregroundStyle(store.config.sharedFolder == nil ? .secondary : .primary)
                         .frame(maxWidth: 220, alignment: .trailing)
                     Button("Choisir…") {
-                        if let url = pickFolder() { store.config.sharedFolder = url.path }
+                        if let url = pickFolder() {
+                            store.config.sharedFolder = url.path
+                            p2p.configure(sharedFolder: url.path, downloadBase: store.mirrorRootURL.path)
+                        }
                     }
                 }
             }
@@ -1936,7 +2008,10 @@ struct SettingsContent: View {
                         .lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: 220, alignment: .trailing)
                     Button("Choisir…") {
-                        if let url = pickFolder() { store.config.downloadFolder = url.path }
+                        if let url = pickFolder() {
+                            store.config.downloadFolder = url.path
+                            p2p.configure(sharedFolder: store.config.sharedFolder, downloadBase: store.mirrorRootURL.path)
+                        }
                     }
                 }
             }
@@ -2009,26 +2084,21 @@ struct SettingsContent: View {
 
             Divider()
 
-            LabeledContent("Moteur expérimental P2P") {
+            LabeledContent("Moteur P2P") {
                 HStack {
-                    Toggle("", isOn: Binding(
-                        get: { store.config.experimentalP2P ?? false },
-                        set: { on in
-                            store.config.experimentalP2P = on
-                            if on {
-                                p2p.enable(displayName: store.config.myName)
-                                p2p.configure(sharedFolder: store.config.sharedFolder,
-                                              downloadBase: store.mirrorRootURL.path)
-                            } else { p2p.disable() }
-                        }
-                    ))
-                    .toggleStyle(.switch)
-                    if store.config.experimentalP2P ?? false {
-                        Button("Panneau P2P…") { showP2P = true }
-                    }
+                    Circle().fill(p2p.isReady ? Color.green : Color.orange).frame(width: 8, height: 8)
+                    Text(p2p.isReady ? "connecté au réseau" : "démarrage…")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Diagnostic…") { showP2P = true }
                 }
             }
-            Text("Moteur P2P Hyperswarm — connexions persistantes chiffrées, sans relai. Coexiste avec croc, n'affecte pas tes contacts actuels.")
+            if !p2p.myPublicKey.isEmpty {
+                Text("Mon identité : \(p2p.myPublicKey)")
+                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                    .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+            }
+            Text("Connexions pair-à-pair chiffrées de bout en bout (Hyperswarm), sans serveur ni relai.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(28)

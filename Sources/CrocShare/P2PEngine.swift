@@ -80,6 +80,7 @@ final class P2PEngine: ObservableObject {
         }
     }
 
+    var isReady: Bool { if case .ready = status { return true }; return false }
     func isOnline(_ key: String) -> Bool { peers.contains { $0.key == key } }
     func name(for key: String) -> String { contactNames[key] ?? String(key.prefix(8)) }
 
@@ -262,6 +263,18 @@ final class P2PEngine: ObservableObject {
     }
 
     func markRead(_ key: String) { unread[key] = 0 }
+
+    func removeContact(_ key: String) {
+        contacts.removeAll { $0 == key }
+        contactNames[key] = nil
+        chats[key] = nil
+        remoteFiles[key] = nil
+        unread[key] = nil
+        peers.removeAll { $0.key == key }
+        Task { try? await bridge?.request("contacts.remove", ["contactKey": key]) }
+    }
+
+    var totalUnread: Int { unread.values.reduce(0, +) }
 
     // MARK: - Fichiers (Phase 4) — partage à la demande sur le tunnel P2P
 
