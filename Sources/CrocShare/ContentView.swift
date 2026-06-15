@@ -2,10 +2,12 @@ import SwiftUI
 import AppKit
 import AVKit
 import UniformTypeIdentifiers
+import QuickLookThumbnailing
 
 // Route de navigation (sidebar verticale unifiée — fini les onglets du haut).
 enum Route: Hashable {
     case myFiles
+    case allSharedFolders
     case contact(String)
     case channel(UUID)
     case settings
@@ -24,19 +26,22 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            UnifiedSidebar(route: $route, showPairing: $showPairing, showNewChannel: $showNewChannel)
+            UnifiedSidebar(route: $route, contactPane: $contactPane,
+                           showPairing: $showPairing, showNewChannel: $showNewChannel)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 258)
         } detail: {
             HStack(spacing: 0) {
                 mainContent.frame(maxWidth: .infinity, maxHeight: .infinity)
                 rightPanel
             }
+            .background(Theme.bgApp)
             .toolbar { toolbarContent }
         }
+        .background(WindowConfigurator())
         .sheet(isPresented: $showPairing) { P2PPairingSheet() }
         .sheet(isPresented: $showNewChannel) { P2PChannelSheet(existing: nil) }
         .frame(minWidth: 980, minHeight: 600)
-        .onChange(of: route) { _ in threadRoot = nil; contactPane = .chat }
+        .onChange(of: route) { _ in threadRoot = nil }
     }
 
     @ToolbarContentBuilder
@@ -62,6 +67,8 @@ struct ContentView: View {
         switch route {
         case .myFiles:
             MyFilesView()
+        case .allSharedFolders:
+            AllSharedFoldersView(onPick: { key in contactPane = .files; route = .contact(key) })
         case .settings:
             ConfigTab()
         case .channel(let id):
@@ -102,24 +109,49 @@ struct ContentView: View {
 /// Sidebar verticale unifiée (style Slack/Discord) : Mes fichiers, Salons,
 /// Messages directs, Réglages — tout dans un seul panneau scrollable.
 struct UnifiedSidebar: View {
+    @EnvironmentObject var store: AppStore
     @EnvironmentObject var p2p: P2PEngine
     @Binding var route: Route?
+    @Binding var contactPane: ContactPane
     @Binding var showPairing: Bool
     @Binding var showNewChannel: Bool
     @State private var showChannels = true
     @State private var showContacts = true
+    @State private var showSharedFolders = true
+
+    private var totalUnread: Int {
+        p2p.unread.values.reduce(0, +) + p2p.channelUnread.values.reduce(0, +)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: Theme.Space.sm) {
-                RoundedRectangle(cornerRadius: 7).fill(Theme.accent)
-                    .frame(width: 30, height: 30)
-                    .overlay(Image(systemName: "bolt.horizontal.fill").foregroundStyle(.white).font(.caption))
+                Button(action: pickAvatar) {
+                    AvatarView(
+                        name: store.config.myName,
+                        id: P2PEngine.uuid(forKey: p2p.myPublicKey.isEmpty ? store.config.myID.uuidString : p2p.myPublicKey),
+                        size: 34,
+                        photoURL: store.config.avatarPath.map { URL(fileURLWithPath: $0) }
+                    )
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "camera.fill").font(.system(size: 8))
+                            .padding(3).background(Circle().fill(Theme.accent)).foregroundStyle(.white)
+                            .offset(x: 2, y: 2)
+                    }
+                }
+                .buttonStyle(.plain).help("Changer ma photo")
                 VStack(alignment: .leading, spacing: 0) {
                     Text("CrocShare").font(Theme.body.weight(.semibold)).foregroundStyle(Theme.textPrimary)
-                    Text("P2P chiffré").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                    if totalUnread > 0 {
+                        Text("\(totalUnread) message\(totalUnread > 1 ? "s" : "") non lu\(totalUnread > 1 ? "s" : "")")
+                            .font(Theme.tiny).foregroundStyle(Theme.accent)
+                    } else {
+                        Text(p2p.myName.isEmpty ? "P2P chiffré" : p2p.myName)
+                            .font(Theme.tiny).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                    }
                 }
                 Spacer()
+                if totalUnread > 0 { UnreadBadge(count: totalUnread) }
             }
             .padding(.horizontal, Theme.Space.md).padding(.vertical, Theme.Space.md)
             Divider()
@@ -127,9 +159,11 @@ struct UnifiedSidebar: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
                     navItem(title: "Mes fichiers partagés", icon: "folder.fill",
-                            active: route == .myFiles) { route = .myFiles }
+                            active: route == .myFiles) { contactPane = .files; route = .myFiles }
+                    navItem(title: "Dossiers partagés", icon: "person.2.fill",
+                            active: route == .allSharedFolders) { contactPane = .files; route = .allSharedFolders }
 
-                    sectionHeader("SALONS", expanded: $showChannels) { showNewChannel = true }
+                    sectionHeader("SALONS", icon: "number", expanded: $showChannels) { showNewChannel = true }
                     if showChannels {
                         ForEach(p2p.channels) { chan in
                             navItem(title: chan.name, icon: "number", active: route == .channel(chan.id),
@@ -139,12 +173,19 @@ struct UnifiedSidebar: View {
                         if p2p.channels.isEmpty { emptyHint("Aucun salon") }
                     }
 
-                    sectionHeader("MESSAGES DIRECTS", expanded: $showContacts) { showPairing = true }
+                    sectionHeader("MESSAGES DIRECTS", icon: "bubble.left.fill", expanded: $showContacts) { showPairing = true }
                     if showContacts {
-                        ForEach(p2p.contacts, id: \.self) { key in contactItem(key) }
+                        ForEach(p2p.contacts, id: \.self) { key in contactItem(key, pane: .chat) }
                         if p2p.contacts.isEmpty { emptyHint("Aucun contact") }
                     }
+
+                    sectionHeader("DOSSIERS PARTAGÉS", icon: "folder.fill", expanded: $showSharedFolders) { showPairing = true }
+                    if showSharedFolders {
+                        ForEach(p2p.contacts, id: \.self) { key in sharedFolderItem(key) }
+                        if p2p.contacts.isEmpty { emptyHint("Aucun contact fichier") }
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Theme.Space.sm).padding(.vertical, Theme.Space.sm)
             }
 
@@ -154,7 +195,7 @@ struct UnifiedSidebar: View {
             }
             .padding(.horizontal, Theme.Space.sm).padding(.vertical, Theme.Space.sm)
         }
-        .background(Theme.surface)
+        .background(VisualEffectBackground())
     }
 
     private func navItem(title: String, icon: String, active: Bool, badge: Int = 0, action: @escaping () -> Void) -> some View {
@@ -163,29 +204,35 @@ struct UnifiedSidebar: View {
                 RoundedRectangle(cornerRadius: 2).fill(active ? Theme.accent : .clear).frame(width: 3, height: 16)
                 Image(systemName: icon).frame(width: 18).foregroundStyle(active ? Theme.accent : Theme.textSecondary)
                 Text(title).font(Theme.body).foregroundStyle(active ? Theme.accent : Theme.textPrimary).lineLimit(1)
-                Spacer()
+                Spacer(minLength: 0)
                 if badge > 0 { UnreadBadge(count: badge) }
             }
-            .padding(.vertical, 5).padding(.trailing, 6)
+            .padding(.vertical, 6).padding(.horizontal, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(active ? Theme.selected : .clear))
+            .contentShape(Rectangle())
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .buttonStyle(.plain)
     }
 
-    private func contactItem(_ key: String) -> some View {
-        let active = route == .contact(key)
-        return Button { route = .contact(key) } label: {
+    private func contactItem(_ key: String, pane: ContactPane) -> some View {
+        let active = route == .contact(key) && contactPane == pane
+        return Button { contactPane = pane; route = .contact(key) } label: {
             HStack(spacing: Theme.Space.sm) {
                 RoundedRectangle(cornerRadius: 2).fill(active ? Theme.accent : .clear).frame(width: 3, height: 18)
-                AvatarView(name: p2p.name(for: key), id: P2PEngine.uuid(forKey: key), size: 22)
+                P2PAvatar(contactKey: key, size: 22)
                     .overlay(alignment: .bottomTrailing) { PresenceDot(online: p2p.isOnline(key), size: 8).offset(x: 1, y: 1) }
                 Text(p2p.name(for: key)).font(Theme.body).foregroundStyle(active ? Theme.accent : Theme.textPrimary).lineLimit(1)
-                Spacer()
+                Spacer(minLength: 0)
                 UnreadBadge(count: p2p.unread[key] ?? 0)
             }
-            .padding(.vertical, 4).padding(.trailing, 6)
+            .padding(.vertical, 5).padding(.horizontal, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(active ? Theme.selected : .clear))
+            .contentShape(Rectangle())
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .buttonStyle(.plain)
         .contextMenu {
             Button("Supprimer le contact", role: .destructive) {
@@ -194,12 +241,45 @@ struct UnifiedSidebar: View {
         }
     }
 
-    private func sectionHeader(_ title: String, expanded: Binding<Bool>, add: @escaping () -> Void) -> some View {
-        HStack(spacing: 4) {
+    private func sharedFolderItem(_ key: String) -> some View {
+        let active = route == .contact(key) && contactPane == .files
+        let count = p2p.remoteFiles[key]?.count ?? 0
+        return Button {
+            contactPane = .files
+            route = .contact(key)
+        } label: {
+            HStack(spacing: Theme.Space.sm) {
+                RoundedRectangle(cornerRadius: 2).fill(active ? Theme.accent : .clear).frame(width: 3, height: 18)
+                PresenceDot(online: p2p.isOnline(key), size: 9)
+                    .frame(width: 22, alignment: .center)
+                Text(p2p.name(for: key)).font(Theme.body).foregroundStyle(active ? Theme.accent : Theme.textPrimary).lineLimit(1)
+                Spacer(minLength: 0)
+                if count > 0 {
+                    Text("\(count)").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                }
+            }
+            .padding(.vertical, 5).padding(.horizontal, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(active ? Theme.selected : .clear))
+            .contentShape(Rectangle())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Supprimer le contact", role: .destructive) {
+                p2p.removeContact(key); if route == .contact(key) { route = .myFiles }
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String, icon: String? = nil, expanded: Binding<Bool>, add: @escaping () -> Void) -> some View {
+        HStack(spacing: 5) {
             Button { withAnimation(.easeInOut(duration: 0.2)) { expanded.wrappedValue.toggle() } } label: {
                 Image(systemName: expanded.wrappedValue ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .bold))
-                Text(title).font(Theme.tiny).foregroundStyle(Theme.textSecondary)
-            }.buttonStyle(.plain)
+                if let icon { Image(systemName: icon).font(.system(size: 10, weight: .semibold)) }
+                Text(title).font(Theme.tiny.weight(.semibold))
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
             Spacer()
             Button(action: add) { Image(systemName: "plus").font(.system(size: 10, weight: .bold)) }
                 .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
@@ -210,13 +290,26 @@ struct UnifiedSidebar: View {
     private func emptyHint(_ t: String) -> some View {
         Text(t).font(Theme.small).foregroundStyle(Theme.textSecondary).padding(.horizontal, 8).padding(.vertical, 4)
     }
+
+    private func pickAvatar() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        if let png = UTType(filenameExtension: "png"), let jpg = UTType(filenameExtension: "jpg") {
+            panel.allowedContentTypes = [png, jpg, UTType.image]
+        }
+        guard panel.runModal() == .OK, let src = panel.url else { return }
+        let dst = P2PEngine.avatarsDir.appendingPathComponent("me-\(UUID().uuidString.prefix(8)).\(src.pathExtension)")
+        try? FileManager.default.copyItem(at: src, to: dst)
+        store.config.avatarPath = dst.path
+        p2p.setMyAvatar(dst.path)
+    }
 }
 struct P2PContactRow: View {
     @EnvironmentObject var p2p: P2PEngine
     let contactKey: String
     var body: some View {
         HStack(spacing: 9) {
-            AvatarView(name: p2p.name(for: contactKey), id: P2PEngine.uuid(forKey: contactKey), size: 26)
+            P2PAvatar(contactKey: contactKey, size: 26)
                 .overlay(alignment: .bottomTrailing) {
                     Circle()
                         .fill(p2p.isOnline(contactKey) ? Color.green : Color.gray.opacity(0.6))
@@ -354,14 +447,20 @@ struct P2PComposerBar: View {
     @State private var draft = ""
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 6) {
+        HStack(alignment: .bottom, spacing: 8) {
             Button { pickAndAttach() } label: {
                 Image(systemName: "paperclip").font(.title3)
             }
             .buttonStyle(.plain).foregroundStyle(.secondary)
+            .frame(width: 30, height: 30)
             .help("Joindre un fichier")
+            AudioRecordingButton { url in
+                if let att = p2p.importChatFile(url, scope: scope) { onAttach(att) }
+                try? FileManager.default.removeItem(at: url)
+            }
             ChatComposer(draft: $draft, placeholder: placeholder, onSend: onSendText)
         }
+        .padding(.horizontal, 10).padding(.vertical, 6)
     }
 
     private func pickAndAttach() {
@@ -387,7 +486,7 @@ struct P2PChatView: View {
         VStack(spacing: 0) {
             ConversationHeaderBar(title: p2p.name(for: contactKey),
                                   online: p2p.isOnline(contactKey),
-                                  avatarID: P2PEngine.uuid(forKey: contactKey),
+                                  contactKey: contactKey,
                                   subtitle: p2p.isOnline(contactKey) ? "en ligne · chiffré P2P" : "hors ligne")
             Divider()
             P2PTranscript(messages: messages, contactKey: contactKey,
@@ -413,6 +512,7 @@ struct P2PChatView: View {
 struct ConversationHeaderBar: View {
     var title: String
     var online: Bool
+    var contactKey: String? = nil
     var avatarID: UUID?
     var icon: String?
     var subtitle: String
@@ -420,7 +520,10 @@ struct ConversationHeaderBar: View {
 
     var body: some View {
         HStack(spacing: Theme.Space.md) {
-            if let avatarID {
+            if let contactKey {
+                P2PAvatar(contactKey: contactKey, size: 38)
+                    .overlay(alignment: .bottomTrailing) { PresenceDot(online: online).offset(x: 1, y: 1) }
+            } else if let avatarID {
                 AvatarView(name: title, id: avatarID, size: 38)
                     .overlay(alignment: .bottomTrailing) { PresenceDot(online: online).offset(x: 1, y: 1) }
             } else if let icon {
@@ -465,16 +568,28 @@ struct P2PTranscript: View {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(p2pDays(topLevel), id: \.date) { day in
                         DayDivider(date: day.date)
-                        ForEach(Array(day.messages.enumerated()), id: \.element.id) { idx, m in
-                            let prev = idx > 0 ? day.messages[idx - 1] : nil
-                            let grouped = prev != nil && prev!.fromMe == m.fromMe
-                                && prev!.fromName == m.fromName
-                                && m.date.timeIntervalSince(prev!.date) < 300
-                            let info = replyInfo[m.id]
-                            P2PRow(message: m, contactKey: contactKey, showHeader: !grouped,
-                                   targets: targets, replyCount: info?.count ?? 0,
-                                   lastReply: info?.last, onOpenThread: { onOpenThread(m) })
-                                .id(m.id)
+                        let items = groupByBundle(day.messages)
+                        ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                            let prevItem: BundledItem? = idx > 0 ? items[idx - 1] : nil
+                            let prev = prevItem?.messages.last
+                            let first = item.messages.first!
+                            let grouped = prev != nil && prev!.fromMe == first.fromMe
+                                && prev!.fromName == first.fromName
+                                && first.date.timeIntervalSince(prev!.date) < 300
+                            let info = replyInfo[first.id]
+                            if item.messages.count > 1 {
+                                P2PBundleRow(messages: item.messages, contactKey: contactKey,
+                                             showHeader: !grouped, targets: targets,
+                                             replyCount: info?.count ?? 0,
+                                             lastReply: info?.last,
+                                             onOpenThread: { onOpenThread(first) })
+                                    .id(item.id)
+                            } else {
+                                P2PRow(message: first, contactKey: contactKey, showHeader: !grouped,
+                                       targets: targets, replyCount: info?.count ?? 0,
+                                       lastReply: info?.last, onOpenThread: { onOpenThread(first) })
+                                    .id(first.id)
+                            }
                         }
                     }
                 }
@@ -484,6 +599,187 @@ struct P2PTranscript: View {
             .onChange(of: topLevel.count) { _ in
                 withAnimation { proxy.scrollTo(topLevel.last?.id, anchor: .bottom) }
             }
+        }
+    }
+}
+
+/// Élément du flux de messages : soit un message unique, soit un lot (plusieurs
+/// messages consécutifs partageant le même `bundleId`).
+struct BundledItem: Identifiable {
+    let id: UUID
+    let messages: [P2PEngine.P2PMessage]
+}
+
+/// Regroupe les messages consécutifs partageant un bundleId et un expéditeur.
+func groupByBundle(_ msgs: [P2PEngine.P2PMessage]) -> [BundledItem] {
+    var result: [BundledItem] = []
+    var current: [P2PEngine.P2PMessage] = []
+    var currentBundle: UUID? = nil
+    var currentSender: String? = nil
+
+    func flush() {
+        guard !current.isEmpty else { return }
+        result.append(BundledItem(id: current[0].id, messages: current))
+        current = []
+    }
+
+    for m in msgs {
+        if let bd = m.bundleId, bd == currentBundle, m.fromName == currentSender {
+            current.append(m)
+        } else {
+            flush()
+            currentBundle = m.bundleId
+            currentSender = m.fromName
+            current = [m]
+            if m.bundleId == nil { flush() }
+        }
+    }
+    flush()
+    return result
+}
+
+/// Bulle « lot de fichiers » façon Slack : grille de vignettes + bouton
+/// « Tout télécharger ». Réactions et fil opèrent sur le 1er message du lot.
+struct P2PBundleRow: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let messages: [P2PEngine.P2PMessage]
+    var contactKey: String? = nil
+    let showHeader: Bool
+    var targets: [String] = []
+    var replyCount: Int = 0
+    var lastReply: Date? = nil
+    var onOpenThread: () -> Void = {}
+
+    private var first: P2PEngine.P2PMessage { messages[0] }
+    private var senderKey: String { first.fromKey ?? contactKey ?? "" }
+    private var displayName: String { first.fromMe ? (p2p.myName.isEmpty ? "Moi" : p2p.myName) : first.fromName }
+    private var avatarID: UUID {
+        P2PEngine.uuid(forKey: first.fromMe ? p2p.myPublicKey : senderKey)
+    }
+    private var attachments: [P2PEngine.P2PAttachment] {
+        messages.compactMap { $0.attachment }
+    }
+    private var totalSize: Int64 {
+        attachments.reduce(0) { $0 + $1.size }
+    }
+    private var pendingCount: Int {
+        attachments.filter { att in p2p.fileDownloads.contains { $0.relPath == att.relPath && ($0.status == .waiting || $0.status == .transferring) } }.count
+    }
+    private var allDownloaded: Bool {
+        attachments.allSatisfy { att in
+            messages.first(where: { $0.attachment?.relPath == att.relPath })
+                .map { p2p.attachmentDownloaded($0) } ?? false
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            if showHeader {
+                AvatarView(name: displayName, id: avatarID, size: 32).padding(.top, 1)
+            } else {
+                Color.clear.frame(width: 32)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                if showHeader {
+                    HStack(spacing: 6) {
+                        Text(displayName).font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AvatarView(name: displayName, id: avatarID).color)
+                        Text(first.date.formatted(date: .omitted, time: .shortened))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                if !first.text.isEmpty {
+                    Text(first.text).font(.system(size: 15)).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // En-tête du lot.
+                HStack(spacing: 6) {
+                    Image(systemName: "square.stack.3d.up.fill").font(.caption)
+                        .foregroundStyle(Theme.accent)
+                    Text("\(attachments.count) fichier\(attachments.count > 1 ? "s" : "") · \(formatBytes(totalSize))")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if !first.fromMe && !allDownloaded {
+                        Button {
+                            for m in messages { p2p.downloadAttachment(m) }
+                        } label: {
+                            Label(pendingCount > 0 ? "Téléchargement…" : "Tout télécharger",
+                                  systemImage: pendingCount > 0 ? "arrow.down.circle" : "arrow.down.circle.fill")
+                                .font(.caption.weight(.medium))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(pendingCount > 0)
+                    } else if allDownloaded {
+                        Label("Téléchargés", systemImage: "checkmark.circle.fill")
+                            .font(.caption).foregroundStyle(.green)
+                    }
+                }
+                // Grille de vignettes.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 130, maximum: 180), spacing: 8)], spacing: 8) {
+                    ForEach(messages, id: \.id) { m in
+                        BundleAttachmentTile(message: m)
+                    }
+                }
+                .frame(maxWidth: 560)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, showHeader ? 6 : 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Vignette dans la grille du lot : aperçu si DL, sinon icône typée + DL solo.
+struct BundleAttachmentTile: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let message: P2PEngine.P2PMessage
+    private var att: P2PEngine.P2PAttachment { message.attachment! }
+    private var url: URL? { p2p.attachmentURL(message) }
+    private var downloaded: Bool { p2p.attachmentDownloaded(message) }
+    private var ext: String { (att.fileName as NSString).pathExtension.lowercased() }
+    private var icon: String {
+        if att.isImage { return "photo" }
+        if att.isVideo { return "play.rectangle.fill" }
+        if att.isRive { return "sparkles" }
+        switch ext {
+        case "pdf": return "doc.richtext.fill"
+        case "txt","md","json","csv","log": return "doc.text.fill"
+        case "zip","rar","7z": return "doc.zipper"
+        default: return "doc.fill"
+        }
+    }
+    private var iconColor: Color {
+        if att.isImage { return .blue }
+        if att.isVideo { return .pink }
+        if att.isRive { return .purple }
+        switch ext {
+        case "pdf": return .red
+        case "zip","rar","7z": return .orange
+        default: return Theme.accent
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.12))
+                if downloaded, let url, att.isImage, let img = NSImage(contentsOf: url) {
+                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                } else if downloaded, let url, FileManager.default.fileExists(atPath: url.path) {
+                    FileThumbnail(url: url, fallbackIcon: icon, fallbackColor: iconColor, iconSize: 28)
+                } else {
+                    Image(systemName: icon).font(.system(size: 28)).foregroundStyle(iconColor)
+                }
+            }
+            .frame(height: 96).clipShape(RoundedRectangle(cornerRadius: 8))
+            .onTapGesture {
+                if downloaded, let url { NSWorkspace.shared.open(url) }
+                else if !message.fromMe { p2p.downloadAttachment(message) }
+            }
+            Text(att.fileName).font(.caption.weight(.medium)).lineLimit(1)
+            Text(formatBytes(att.size)).font(.caption2).foregroundStyle(.secondary)
         }
     }
 }
@@ -553,6 +849,19 @@ struct MyFilesView: View {
                     ownerID: P2PEngine.uuid(forKey: p2p.myPublicKey),
                     statusFor: { _ in .mine }, localURLFor: localURL,
                     onPrimary: { f in if let u = localURL(f) { NSWorkspace.shared.activateFileViewerSelecting([u]) } },
+                    onShare: { f, contactKey in
+                        let att = P2PEngine.P2PAttachment(fileName: f.name, relPath: f.path, size: f.size)
+                        p2p.send("", attachment: att, to: contactKey)
+                        p2p.recordShare(path: f.path, with: contactKey)
+                    },
+                    onShareBundle: { files, contactKey in
+                        let atts = files.map { P2PEngine.P2PAttachment(fileName: $0.name, relPath: $0.path, size: $0.size) }
+                        p2p.sendBundle(atts, to: contactKey)
+                        for f in files { p2p.recordShare(path: f.path, with: contactKey) }
+                    },
+                    shareContacts: p2p.contacts.map { (key: $0, name: p2p.name(for: $0)) },
+                    sharedWith: { p2p.sharedWith(path: $0) },
+                    onRevokeShare: { path, key in p2p.revokeShare(path: path, with: key) },
                     headerTrailing: store.config.sharedFolder.map { p in AnyView(
                         Button("Ouvrir le dossier") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }.font(Theme.small)
                     )})
@@ -562,38 +871,28 @@ struct MyFilesView: View {
     }
 }
 
-/// Navigateur de fichiers réutilisable : barre (titre, compteur, recherche,
-/// bascule liste/grille) + grille de cartes OU liste, avec vignettes et métadonnées.
-struct FilesBrowser: View {
-    let title: String
-    var subtitle: String = ""
-    var online: Bool = true
-    let files: [RemoteFile]
-    let ownerName: String
-    let ownerID: UUID
-    var statusFor: (RemoteFile) -> FileStatus
-    var localURLFor: (RemoteFile) -> URL?
-    var onPrimary: (RemoteFile) -> Void
-    var headerTrailing: AnyView? = nil
+/// Vue racine « Dossiers partagés » : chaque contact apparaît comme un dossier
+/// (avatar/point coloré + nom + nombre de fichiers). Clic → entre dans son dossier.
+struct AllSharedFoldersView: View {
+    @EnvironmentObject var p2p: P2PEngine
+    var onPick: (String) -> Void
     @State private var grid = true
     @State private var search = ""
 
-    var filtered: [RemoteFile] {
-        let f = files.sorted { $0.path < $1.path }
-        return search.isEmpty ? f : f.filter { $0.name.localizedCaseInsensitiveContains(search) }
+    private var contacts: [String] {
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        let all = p2p.contacts.sorted { p2p.name(for: $0).localizedCaseInsensitiveCompare(p2p.name(for: $1)) == .orderedAscending }
+        return q.isEmpty ? all : all.filter { p2p.name(for: $0).lowercased().contains(q) }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: Theme.Space.md) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(Theme.h2).foregroundStyle(Theme.textPrimary).lineLimit(1)
-                    if !subtitle.isEmpty {
-                        Text(subtitle).font(Theme.small)
-                            .foregroundStyle(online ? Theme.textSecondary : Theme.away)
-                    }
+                    Text("Dossiers partagés").font(Theme.h2).foregroundStyle(Theme.textPrimary)
+                    Text("Un dossier par contact — clic pour ouvrir").font(Theme.small).foregroundStyle(Theme.textSecondary)
                 }
-                Text("\(filtered.count)").font(Theme.small).foregroundStyle(Theme.textSecondary)
+                Text("\(contacts.count)").font(Theme.small).foregroundStyle(Theme.textSecondary)
                     .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(Theme.surfaceAlt))
                 Spacer()
                 HStack(spacing: 4) {
@@ -606,31 +905,27 @@ struct FilesBrowser: View {
                     Image(systemName: "square.grid.2x2").tag(true)
                     Image(systemName: "list.bullet").tag(false)
                 }.pickerStyle(.segmented).frame(width: 76)
-                if let headerTrailing { headerTrailing }
             }
             .padding(.horizontal, Theme.Space.lg).padding(.vertical, Theme.Space.md)
             .background(Theme.surface)
             Divider()
 
-            if filtered.isEmpty {
-                ContentPlaceholder(icon: online ? "tray" : "wifi.slash",
-                    text: search.isEmpty ? (online ? "Aucun fichier." : "Hors ligne — la liste apparaîtra à la connexion.")
-                                          : "Aucun résultat pour « \(search) ».")
+            if contacts.isEmpty {
+                ContentPlaceholder(icon: "person.2",
+                    text: search.isEmpty ? "Aucun contact pour le moment." : "Aucun contact pour « \(search) ».")
             } else if grid {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 158, maximum: 210), spacing: 14)], spacing: 14) {
-                        ForEach(filtered) { f in
-                            FileItem(file: f, ownerName: ownerName, ownerID: ownerID, grid: true,
-                                     thumbURL: localURLFor(f), status: statusFor(f), onPrimary: { onPrimary(f) })
+                        ForEach(contacts, id: \.self) { key in
+                            ContactFolderCard(contactKey: key, grid: true, onOpen: { onPick(key) })
                         }
                     }.padding(Theme.Space.lg)
                 }
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(filtered) { f in
-                            FileItem(file: f, ownerName: ownerName, ownerID: ownerID, grid: false,
-                                     thumbURL: localURLFor(f), status: statusFor(f), onPrimary: { onPrimary(f) })
+                        ForEach(contacts, id: \.self) { key in
+                            ContactFolderCard(contactKey: key, grid: false, onOpen: { onPick(key) })
                             Divider().padding(.leading, 44)
                         }
                     }.padding(.horizontal, Theme.Space.sm).padding(.vertical, Theme.Space.xs)
@@ -638,6 +933,459 @@ struct FilesBrowser: View {
             }
         }
         .background(Theme.bgApp)
+    }
+}
+
+/// Cellule « dossier d'un contact » : avatar + nom + point en-ligne + compteur.
+struct ContactFolderCard: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let contactKey: String
+    let grid: Bool
+    var onOpen: () -> Void
+
+    private var name: String { p2p.name(for: contactKey) }
+    private var count: Int { p2p.remoteFiles[contactKey]?.count ?? 0 }
+    private var online: Bool { p2p.isOnline(contactKey) }
+
+    var body: some View {
+        if grid {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12).fill(Theme.surfaceAlt)
+                    Image(systemName: "folder.fill").font(.system(size: 36)).foregroundStyle(Theme.accent.opacity(0.85))
+                    VStack { Spacer(); HStack { Spacer()
+                        P2PAvatar(contactKey: contactKey, size: 28)
+                            .overlay(alignment: .bottomTrailing) { PresenceDot(online: online, size: 9).offset(x: 1, y: 1) }
+                            .padding(8)
+                    } }
+                }
+                .frame(height: 104)
+                HStack(spacing: 5) {
+                    PresenceDot(online: online, size: 8)
+                    Text(name).font(Theme.body.weight(.medium)).lineLimit(1).foregroundStyle(Theme.textPrimary)
+                }
+                Text(count == 0 ? "Aucun fichier" : "\(count) fichier\(count > 1 ? "s" : "")")
+                    .font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+            }
+            .padding(8).card(radius: Theme.Radius.lg)
+            .contentShape(Rectangle()).onTapGesture(perform: onOpen)
+            .help("Ouvrir le dossier de \(name)")
+        } else {
+            HStack(spacing: Theme.Space.md) {
+                P2PAvatar(contactKey: contactKey, size: 30)
+                    .overlay(alignment: .bottomTrailing) { PresenceDot(online: online, size: 9).offset(x: 1, y: 1) }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name).font(Theme.body).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text(online ? "en ligne" : "hors ligne").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+                Text(count == 0 ? "—" : "\(count)").font(Theme.small).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 36, alignment: .trailing)
+                Image(systemName: "chevron.right").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+            }
+            .padding(.horizontal, Theme.Space.sm).padding(.vertical, 6)
+            .contentShape(Rectangle()).onTapGesture(perform: onOpen)
+        }
+    }
+}
+
+/// Navigateur de fichiers réutilisable : barre (titre, compteur, recherche,
+/// bascule liste/grille) + grille de cartes OU liste, avec vignettes et métadonnées.
+enum FilesSortMode: String, CaseIterable, Identifiable {
+    case nameAsc = "Nom A→Z"
+    case nameDesc = "Nom Z→A"
+    case dateDesc = "Plus récent"
+    case dateAsc = "Plus ancien"
+    case sizeDesc = "Plus gros"
+    case sizeAsc = "Plus petit"
+    var id: String { rawValue }
+}
+
+struct FilesBrowser: View {
+    let title: String
+    var subtitle: String = ""
+    var online: Bool = true
+    let files: [RemoteFile]
+    let ownerName: String
+    let ownerID: UUID
+    var statusFor: (RemoteFile) -> FileStatus
+    var localURLFor: (RemoteFile) -> URL?
+    var onPrimary: (RemoteFile) -> Void
+    var onShare: ((RemoteFile, String) -> Void)? = nil
+    var onShareBundle: (([RemoteFile], String) -> Void)? = nil
+    var shareContacts: [(key: String, name: String)] = []
+    /// Resolveur : chemin → liste de clés de contacts avec qui c'est partagé.
+    var sharedWith: ((String) -> [String])? = nil
+    /// Révoque le partage d'un fichier avec un contact donné.
+    var onRevokeShare: ((String, String) -> Void)? = nil
+    var headerTrailing: AnyView? = nil
+    @State private var grid = true
+    @State private var search = ""
+    @State private var currentFolder = ""
+    @State private var sortMode: FilesSortMode = .dateDesc
+    @State private var selected: RemoteFile?
+    @State private var selectedFolder: FileNode?
+
+    var filtered: [RemoteFile] {
+        var f = files
+        switch sortMode {
+        case .nameAsc:  f.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .nameDesc: f.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedDescending }
+        case .dateDesc: f.sort { $0.mtime > $1.mtime }
+        case .dateAsc:  f.sort { $0.mtime < $1.mtime }
+        case .sizeDesc: f.sort { $0.size > $1.size }
+        case .sizeAsc:  f.sort { $0.size < $1.size }
+        }
+        return search.isEmpty ? f : f.filter {
+            $0.name.localizedCaseInsensitiveContains(search) || $0.path.localizedCaseInsensitiveContains(search)
+        }
+    }
+    var currentNodes: [FileNode] {
+        let entries = filtered.compactMap { file -> (components: [String], file: RemoteFile)? in
+            guard search.isEmpty else { return (file.path.split(separator: "/").map(String.init), file) }
+            guard currentFolder.isEmpty || file.path.hasPrefix(currentFolder) else { return nil }
+            let relative = currentFolder.isEmpty ? file.path : String(file.path.dropFirst(currentFolder.count))
+            let components = relative.split(separator: "/").map(String.init)
+            return components.isEmpty ? nil : (components, file)
+        }
+        return FileNode.build(entries: entries, prefix: currentFolder)
+    }
+    var folderTrail: [(name: String, path: String)] {
+        guard !currentFolder.isEmpty else { return [] }
+        var path = ""
+        return currentFolder.split(separator: "/").map(String.init).map { part in
+            path += part + "/"
+            return (part, path)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                VStack(spacing: Theme.Space.sm) {
+                    HStack(spacing: Theme.Space.md) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title).font(Theme.h2).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                            if !subtitle.isEmpty {
+                                Text(subtitle).font(Theme.small)
+                                    .foregroundStyle(online ? Theme.textSecondary : Theme.away)
+                            }
+                        }
+                        Text("\(filtered.count)").font(Theme.small).foregroundStyle(Theme.textSecondary)
+                            .padding(.horizontal, 7).padding(.vertical, 2).background(Capsule().fill(Theme.surfaceAlt))
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(Theme.textSecondary)
+                            TextField("Rechercher", text: $search).textFieldStyle(.plain).frame(width: 130)
+                                .onChange(of: search) { _ in currentFolder = "" }
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(Theme.surfaceAlt))
+                        Picker("", selection: $grid) {
+                            Image(systemName: "square.grid.2x2").tag(true)
+                            Image(systemName: "list.bullet").tag(false)
+                        }.pickerStyle(.segmented).frame(width: 76)
+                        if let headerTrailing { headerTrailing }
+                    }
+                    HStack(spacing: Theme.Space.sm) {
+                        Menu {
+                            ForEach(FilesSortMode.allCases) { mode in
+                                Button {
+                                    sortMode = mode
+                                } label: {
+                                    if sortMode == mode { Label(mode.rawValue, systemImage: "checkmark") }
+                                    else { Text(mode.rawValue) }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "line.3.horizontal.decrease").font(.caption)
+                                Text("Trier : \(sortMode.rawValue)").font(Theme.small)
+                                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(Theme.surfaceAlt))
+                            .foregroundStyle(Theme.textPrimary)
+                        }
+                        .menuStyle(.borderlessButton).fixedSize()
+                        if search.isEmpty {
+                            FolderBreadcrumb(title: title, trail: folderTrail) { currentFolder = $0 }
+                        }
+                        Spacer()
+                    }
+                }
+                .padding(.horizontal, Theme.Space.lg).padding(.vertical, Theme.Space.md)
+                .background(Theme.surface)
+                Divider()
+
+                if filtered.isEmpty {
+                    ContentPlaceholder(icon: online ? "tray" : "wifi.slash",
+                        text: search.isEmpty ? (online ? "Aucun fichier." : "Hors ligne — la liste apparaîtra à la connexion.")
+                                              : "Aucun résultat pour « \(search) ».")
+                } else if grid {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 158, maximum: 210), spacing: 14)], spacing: 14) {
+                            ForEach(currentNodes) { node in
+                                if let f = node.file {
+                                    fileCell(f, grid: true)
+                                } else {
+                                    folderCell(node, grid: true)
+                                }
+                            }
+                        }.padding(Theme.Space.lg)
+                    }
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(currentNodes) { node in
+                                if let f = node.file {
+                                    fileCell(f, grid: false)
+                                } else {
+                                    folderCell(node, grid: false)
+                                }
+                                Divider().padding(.leading, 44)
+                            }
+                        }.padding(.horizontal, Theme.Space.sm).padding(.vertical, Theme.Space.xs)
+                    }
+                }
+            }
+            .background(Theme.bgApp)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if let f = selected {
+                Divider()
+                FileInfoPanel(file: f, ownerName: ownerName, ownerID: ownerID,
+                              thumbURL: localURLFor(f), status: statusFor(f),
+                              shareContacts: shareContacts,
+                              sharedWithKeys: sharedWith?(f.path) ?? [],
+                              onOpen: { onPrimary(f) },
+                              onShare: onShare.map { share in { contactKey in share(f, contactKey) } },
+                              onRevokeShare: onRevokeShare.map { revoke in { k in revoke(f.path, k) } },
+                              onClose: { selected = nil })
+                    .frame(width: 300)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else if let node = selectedFolder {
+                Divider()
+                let folderShares: [String] = {
+                    guard let resolver = sharedWith, !node.allFiles.isEmpty else { return [] }
+                    let sets = node.allFiles.map { Set(resolver($0.path)) }
+                    return Array(sets.dropFirst().reduce(sets.first ?? []) { $0.intersection($1) }).sorted()
+                }()
+                FolderInfoPanel(node: node,
+                                shareContacts: shareContacts,
+                                sharedWithKeys: folderShares,
+                                onOpen: { currentFolder = node.id; selectedFolder = nil; selected = nil },
+                                onShareAll: onShare.map { share in { key in for f in node.allFiles { share(f, key) } } },
+                                onRevokeAll: onRevokeShare.map { revoke in { k in for f in node.allFiles { revoke(f.path, k) } } },
+                                onClose: { selectedFolder = nil })
+                    .frame(width: 300)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fileCell(_ f: RemoteFile, grid: Bool) -> some View {
+        let isSelected = selected?.path == f.path
+        let shares = sharedWith?(f.path) ?? []
+        FileItem(file: f, ownerName: ownerName, ownerID: ownerID, grid: grid,
+                 thumbURL: localURLFor(f), status: statusFor(f),
+                 selected: isSelected,
+                 sharedWithKeys: shares,
+                 onOpen: { onPrimary(f) },
+                 onSelect: { withAnimation(.easeInOut(duration: 0.15)) { selected = f; selectedFolder = nil } })
+            .contextMenu { fileContextMenu(path: f.path, shares: shares, share: onShare.map { s in { k in s(f, k) } }, open: { onPrimary(f) }, info: { withAnimation { selected = f } }) }
+    }
+
+    @ViewBuilder
+    private func folderCell(_ node: FileNode, grid: Bool) -> some View {
+        // Un dossier est "partagé avec X" si tous ses fichiers le sont.
+        let folderShares: [String] = {
+            guard let resolver = sharedWith, !node.allFiles.isEmpty else { return [] }
+            let sets = node.allFiles.map { Set(resolver($0.path)) }
+            return Array(sets.dropFirst().reduce(sets.first ?? []) { $0.intersection($1) })
+                .sorted()
+        }()
+        FolderItem(node: node, grid: grid,
+                   sharedWithKeys: folderShares,
+                   selected: selectedFolder?.id == node.id,
+                   onOpen: { currentFolder = node.id; selected = nil; selectedFolder = nil },
+                   onSelect: { withAnimation(.easeInOut(duration: 0.15)) { selectedFolder = node; selected = nil } })
+            .contextMenu {
+                Button("Ouvrir") { currentFolder = node.id; selected = nil }
+                if !shareContacts.isEmpty {
+                    Menu("Partager le dossier avec…") {
+                        ForEach(shareContacts, id: \.key) { c in
+                            Button(c.name) {
+                                if let bundle = onShareBundle {
+                                    bundle(node.allFiles, c.key)
+                                } else if let share = onShare {
+                                    for f in node.allFiles { share(f, c.key) }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !folderShares.isEmpty, let revoke = onRevokeShare {
+                    Menu("Retirer le partage…") {
+                        ForEach(folderShares, id: \.self) { k in
+                            Button(p2pName(k)) {
+                                for f in node.allFiles { revoke(f.path, k) }
+                            }
+                        }
+                    }
+                }
+            }
+    }
+
+    /// Source de nom indirecte (FilesBrowser n'a pas d'accès direct à p2p, donc
+    /// on s'appuie sur shareContacts pour résoudre key→nom).
+    private func p2pName(_ key: String) -> String {
+        shareContacts.first(where: { $0.key == key })?.name ?? String(key.prefix(8))
+    }
+
+    @ViewBuilder
+    private func fileContextMenu(path: String, shares: [String],
+                                 share: ((String) -> Void)?,
+                                 open: @escaping () -> Void,
+                                 info: @escaping () -> Void) -> some View {
+        Button("Ouvrir", action: open)
+        Button("Infos", action: info)
+        if !shareContacts.isEmpty, let share {
+            Menu("Partager avec…") {
+                ForEach(shareContacts, id: \.key) { c in
+                    let already = shares.contains(c.key)
+                    Button {
+                        share(c.key)
+                    } label: {
+                        if already { Label(c.name, systemImage: "checkmark") }
+                        else { Text(c.name) }
+                    }
+                }
+            }
+        }
+        if !shares.isEmpty, let revoke = onRevokeShare {
+            Menu("Retirer le partage…") {
+                ForEach(shares, id: \.self) { k in
+                    Button(p2pName(k)) { revoke(path, k) }
+                }
+            }
+        }
+    }
+}
+
+struct FolderBreadcrumb: View {
+    let title: String
+    let trail: [(name: String, path: String)]
+    var onSelect: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Button { onSelect("") } label: {
+                Label("Racine", systemImage: "house.fill").labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(trail.isEmpty ? Theme.textPrimary : Theme.accent)
+            ForEach(trail, id: \.path) { item in
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+                Button(item.name) { onSelect(item.path) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(item.path == trail.last?.path ? Theme.textPrimary : Theme.accent)
+            }
+            Spacer()
+        }
+        .font(Theme.small)
+    }
+}
+
+struct FolderItem: View {
+    let node: FileNode
+    let grid: Bool
+    var sharedWithKeys: [String] = []
+    var selected: Bool = false
+    var onOpen: () -> Void
+    var onSelect: () -> Void = {}
+
+    var body: some View {
+        if grid {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12).fill(Theme.surfaceAlt)
+                    Image(systemName: "folder.fill").font(.system(size: 36)).foregroundStyle(Theme.away)
+                }
+                .frame(height: 104)
+                .overlay(alignment: .bottomLeading) {
+                    if !sharedWithKeys.isEmpty {
+                        SharedWithStack(keys: sharedWithKeys, size: 18).padding(6)
+                    }
+                }
+                Text(node.name).font(Theme.body.weight(.medium)).lineLimit(1).foregroundStyle(Theme.textPrimary)
+                Text("\(node.allFiles.count) élément\(node.allFiles.count > 1 ? "s" : "")")
+                    .font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+            }
+            .padding(8).card(radius: Theme.Radius.lg)
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg)
+                .stroke(selected ? Theme.accent : .clear, lineWidth: 2))
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { onOpen() }
+            .onTapGesture { onSelect() }
+            .help("Double-clic pour ouvrir le dossier")
+        } else {
+            HStack(spacing: Theme.Space.md) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8).fill(Theme.surfaceAlt)
+                    Image(systemName: "folder.fill").foregroundStyle(Theme.away)
+                }
+                .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(node.name).font(Theme.body).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text("\(node.allFiles.count) élément\(node.allFiles.count > 1 ? "s" : "")")
+                        .font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+                if !sharedWithKeys.isEmpty {
+                    SharedWithStack(keys: sharedWithKeys, size: 16)
+                }
+                Image(systemName: "chevron.right").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+            }
+            .padding(.horizontal, Theme.Space.sm).padding(.vertical, 6)
+            .background(selected ? Theme.selected : .clear)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { onOpen() }
+            .onTapGesture { onSelect() }
+        }
+    }
+}
+
+/// Pile d'avatars compacts (max 3 + "+N") pour montrer avec qui un fichier ou
+/// dossier est partagé. Tooltip détaille la liste complète.
+struct SharedWithStack: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let keys: [String]
+    var size: CGFloat = 18
+
+    var body: some View {
+        let shown = Array(keys.prefix(3))
+        let extra = keys.count - shown.count
+        HStack(spacing: -size * 0.35) {
+            ForEach(shown, id: \.self) { k in
+                P2PAvatar(contactKey: k, size: size)
+                    .overlay(Circle().stroke(Theme.surface, lineWidth: 1.5))
+            }
+            if extra > 0 {
+                ZStack {
+                    Circle().fill(Theme.surfaceAlt)
+                    Text("+\(extra)").font(.system(size: size * 0.45, weight: .semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .frame(width: size, height: size)
+                .overlay(Circle().stroke(Theme.surface, lineWidth: 1.5))
+            }
+        }
+        .padding(.horizontal, 3).padding(.vertical, 1)
+        .background(Capsule().fill(Theme.surface.opacity(0.85)))
+        .overlay(Capsule().stroke(Theme.separator, lineWidth: 0.5))
+        .help("Partagé avec : " + keys.map { p2p.name(for: $0) }.joined(separator: ", "))
     }
 }
 
@@ -650,22 +1398,28 @@ struct FileItem: View {
     let grid: Bool
     let thumbURL: URL?
     let status: FileStatus
-    var onPrimary: () -> Void
+    var selected: Bool = false
+    var sharedWithKeys: [String] = []
+    var onOpen: () -> Void
+    var onSelect: () -> Void = {}
 
     var ext: String { (file.path as NSString).pathExtension.lowercased() }
     var isImage: Bool { ["png","jpg","jpeg","gif","heic","webp","tiff"].contains(ext) }
     var local: Bool { status == .mine || status == .downloaded }
-    var thumbnail: NSImage? {
-        guard local, isImage, let u = thumbURL else { return nil }
-        return NSImage(contentsOf: u)
-    }
     var iconName: String {
         if isImage { return "photo" }
-        switch ext { case "mp4","mov","m4v": return "play.rectangle.fill"; case "pdf": return "doc.richtext.fill"
-        case "zip","rar","7z": return "doc.zipper"; case "riv": return "sparkles"; default: return "doc.fill" }
+        switch ext {
+        case "mp4","mov","m4v": return "play.rectangle.fill"
+        case "pdf": return "doc.richtext.fill"
+        case "txt","md","rtf","json","csv","log": return "doc.text.fill"
+        case "zip","rar","7z": return "doc.zipper"
+        case "riv": return "sparkles"
+        default: return "doc.fill"
+        }
     }
     var iconColor: Color {
         switch ext { case "mp4","mov","m4v": return .pink; case "pdf": return .red; case "riv": return .purple
+        case "txt","md","rtf","json","csv","log": return .teal
         case "zip","rar","7z": return .orange; default: return Theme.accent }
     }
 
@@ -679,8 +1433,9 @@ struct FileItem: View {
     }
 
     @ViewBuilder var preview: some View {
-        if let img = thumbnail {
-            Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+        if local, let thumbURL {
+            FileThumbnail(url: thumbURL, fallbackIcon: iconName, fallbackColor: iconColor,
+                          iconSize: grid ? 32 : 18)
         } else {
             Image(systemName: iconName).font(.system(size: grid ? 32 : 18)).foregroundStyle(iconColor)
         }
@@ -694,6 +1449,11 @@ struct FileItem: View {
                     .overlay(alignment: .topTrailing) {
                         statusBadge.padding(6).background(Circle().fill(Theme.surface).opacity(0.9)).padding(6)
                     }
+                    .overlay(alignment: .bottomLeading) {
+                        if !sharedWithKeys.isEmpty {
+                            SharedWithStack(keys: sharedWithKeys, size: 18).padding(6)
+                        }
+                    }
                 Text(file.name).font(Theme.body.weight(.medium)).lineLimit(1).foregroundStyle(Theme.textPrimary)
                 HStack(spacing: 5) {
                     AvatarView(name: ownerName, id: ownerID, size: 16)
@@ -703,8 +1463,12 @@ struct FileItem: View {
                 }.foregroundStyle(Theme.textSecondary)
             }
             .padding(8).card(radius: Theme.Radius.lg)
-            .contentShape(Rectangle()).onTapGesture { onPrimary() }
-            .help(local ? "Afficher dans le Finder" : "Télécharger")
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg)
+                .stroke(selected ? Theme.accent : .clear, lineWidth: 2))
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { onOpen() }
+            .onTapGesture { onSelect() }
+            .help(local ? "Double-clic pour ouvrir dans le Finder" : "Double-clic pour télécharger")
         } else {
             HStack(spacing: Theme.Space.md) {
                 ZStack { RoundedRectangle(cornerRadius: 8).fill(Theme.surfaceAlt); preview }
@@ -714,16 +1478,328 @@ struct FileItem: View {
                     Text(file.path).font(Theme.tiny).foregroundStyle(Theme.textSecondary).lineLimit(1)
                 }
                 Spacer()
+                if !sharedWithKeys.isEmpty {
+                    SharedWithStack(keys: sharedWithKeys, size: 16)
+                }
                 AvatarView(name: ownerName, id: ownerID, size: 18)
                 Text(file.mtime.formatted(date: .numeric, time: .omitted)).font(Theme.small)
                     .foregroundStyle(Theme.textSecondary).frame(width: 80, alignment: .trailing)
                 Text(formatBytes(file.size)).font(Theme.small).foregroundStyle(Theme.textSecondary)
                     .frame(width: 64, alignment: .trailing)
-                Button(action: onPrimary) { statusBadge }.buttonStyle(.plain).frame(width: 24)
+                Button(action: onOpen) { statusBadge }.buttonStyle(.plain).frame(width: 24)
             }
             .padding(.horizontal, Theme.Space.sm).padding(.vertical, 6)
-            .contentShape(Rectangle()).onTapGesture { onPrimary() }
+            .background(selected ? Theme.selected : .clear)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { onOpen() }
+            .onTapGesture { onSelect() }
         }
+    }
+}
+
+/// Panneau latéral droit qui montre les méta-données d'un fichier sélectionné.
+/// Visible quand l'utilisateur a cliqué (clic simple) sur un fichier de la
+/// grille/liste. Double-clic ouvre directement le fichier (cf. FileItem).
+struct FileInfoPanel: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let file: RemoteFile
+    let ownerName: String
+    let ownerID: UUID
+    let thumbURL: URL?
+    let status: FileStatus
+    var shareContacts: [(key: String, name: String)] = []
+    var sharedWithKeys: [String] = []
+    var onOpen: () -> Void
+    var onShare: ((String) -> Void)?
+    var onRevokeShare: ((String) -> Void)?
+    var onClose: () -> Void
+
+    @State private var tag: String = ""
+
+    var ext: String { (file.path as NSString).pathExtension.lowercased() }
+    var fallbackIcon: String {
+        switch ext {
+        case "png","jpg","jpeg","gif","heic","webp","tiff": return "photo"
+        case "mp4","mov","m4v": return "play.rectangle.fill"
+        case "pdf": return "doc.richtext.fill"
+        case "txt","md","rtf","json","csv","log": return "doc.text.fill"
+        case "zip","rar","7z": return "doc.zipper"
+        case "riv": return "sparkles"
+        default: return "doc.fill"
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Space.md) {
+                HStack {
+                    Text("Infos fichier").font(Theme.body.weight(.semibold))
+                    Spacer()
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark.circle.fill").font(.title3)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 28, height: 28)
+                    .help("Fermer le panneau")
+                }
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12).fill(Theme.surfaceAlt)
+                    if let thumbURL, status == .downloaded || status == .mine,
+                       FileManager.default.fileExists(atPath: thumbURL.path) {
+                        RichFilePreview(url: thumbURL, maxHeight: 220)
+                    } else {
+                        Image(systemName: fallbackIcon).font(.system(size: 48))
+                            .foregroundStyle(Theme.accent)
+                    }
+                }
+                .frame(minHeight: 160, maxHeight: 240)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                Text(file.name).font(Theme.body.weight(.semibold)).lineLimit(2)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    row("Taille", formatBytes(file.size))
+                    row("Modifié le", file.mtime.formatted(date: .abbreviated, time: .shortened))
+                    row("Chemin", file.path)
+                    row("Type", ext.isEmpty ? "—" : ext.uppercased())
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Propriétaire").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                    HStack {
+                        AvatarView(name: ownerName, id: ownerID, size: 22)
+                        Text(ownerName).font(Theme.body)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Tag").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                    TextField("Ajoute un tag (libre)", text: $tag)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                if !shareContacts.isEmpty, let share = onShare {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Partager avec").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                        // Liste des partages actuels avec bouton ×.
+                        if !sharedWithKeys.isEmpty {
+                            VStack(spacing: 4) {
+                                ForEach(sharedWithKeys, id: \.self) { k in
+                                    HStack(spacing: 6) {
+                                        P2PAvatar(contactKey: k, size: 18)
+                                        Text(p2p.name(for: k)).font(Theme.small)
+                                        Spacer()
+                                        if let revoke = onRevokeShare {
+                                            Button {
+                                                revoke(k)
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill").font(.system(size: 12))
+                                            }
+                                            .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                                            .help("Retirer du partage")
+                                        }
+                                    }
+                                    .padding(.horizontal, 6).padding(.vertical, 3)
+                                    .background(RoundedRectangle(cornerRadius: 5).fill(Theme.surfaceAlt))
+                                }
+                            }
+                        }
+                        // Ajouter un destinataire.
+                        let remaining = shareContacts.filter { !sharedWithKeys.contains($0.key) }
+                        if !remaining.isEmpty {
+                            Menu {
+                                ForEach(remaining, id: \.key) { c in
+                                    Button(c.name) { share(c.key) }
+                                }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "plus.circle")
+                                    Text(sharedWithKeys.isEmpty ? "Choisir un contact…" : "Ajouter un destinataire…")
+                                    Spacer()
+                                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(Theme.surfaceAlt))
+                                .foregroundStyle(Theme.textPrimary)
+                            }
+                            .menuStyle(.borderlessButton)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 0)
+                Button(action: onOpen) {
+                    HStack { Spacer(); Label("Ouvrir", systemImage: "arrow.up.right.square"); Spacer() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(Theme.Space.md)
+        }
+        .background(Theme.surface)
+        .onChange(of: file.path) { _ in tag = "" }
+    }
+
+    @ViewBuilder
+    private func row(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+            Text(value).font(Theme.small).foregroundStyle(Theme.textPrimary).lineLimit(2)
+        }
+    }
+}
+
+/// Panneau d'infos pour un dossier sélectionné (clic simple). Double-clic
+/// ouvre le dossier via le bouton ou directement sur la carte.
+struct FolderInfoPanel: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let node: FileNode
+    var shareContacts: [(key: String, name: String)] = []
+    var sharedWithKeys: [String] = []
+    var onOpen: () -> Void
+    var onShareAll: ((String) -> Void)?
+    var onRevokeAll: ((String) -> Void)?
+    var onClose: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Space.md) {
+                HStack {
+                    Text("Infos dossier").font(Theme.body.weight(.semibold))
+                    Spacer()
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark.circle.fill").font(.title3)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 28, height: 28)
+                    .help("Fermer le panneau")
+                }
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12).fill(Theme.surfaceAlt)
+                    Image(systemName: "folder.fill").font(.system(size: 64))
+                        .foregroundStyle(Theme.away)
+                }
+                .frame(height: 160).clipShape(RoundedRectangle(cornerRadius: 12))
+
+                Text(node.name).font(Theme.body.weight(.semibold)).lineLimit(2)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    row("Éléments", "\(node.allFiles.count)")
+                    row("Taille totale", formatBytes(node.allFiles.reduce(0) { $0 + $1.size }))
+                    if let latest = node.allFiles.map(\.mtime).max() {
+                        row("Dernière modif.", latest.formatted(date: .abbreviated, time: .shortened))
+                    }
+                }
+
+                if !shareContacts.isEmpty, let share = onShareAll {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Partagé avec").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                        if !sharedWithKeys.isEmpty {
+                            VStack(spacing: 4) {
+                                ForEach(sharedWithKeys, id: \.self) { k in
+                                    HStack(spacing: 6) {
+                                        P2PAvatar(contactKey: k, size: 18)
+                                        Text(p2p.name(for: k)).font(Theme.small)
+                                        Spacer()
+                                        if let revoke = onRevokeAll {
+                                            Button { revoke(k) } label: {
+                                                Image(systemName: "xmark.circle.fill").font(.system(size: 12))
+                                            }
+                                            .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                                            .help("Retirer du partage tous les fichiers du dossier")
+                                        }
+                                    }
+                                    .padding(.horizontal, 6).padding(.vertical, 3)
+                                    .background(RoundedRectangle(cornerRadius: 5).fill(Theme.surfaceAlt))
+                                }
+                            }
+                        }
+                        let remaining = shareContacts.filter { !sharedWithKeys.contains($0.key) }
+                        if !remaining.isEmpty {
+                            Menu {
+                                ForEach(remaining, id: \.key) { c in
+                                    Button(c.name) { share(c.key) }
+                                }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "plus.circle")
+                                    Text(sharedWithKeys.isEmpty ? "Choisir un contact…" : "Ajouter un destinataire…")
+                                    Spacer()
+                                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(RoundedRectangle(cornerRadius: Theme.Radius.sm).fill(Theme.surfaceAlt))
+                                .foregroundStyle(Theme.textPrimary)
+                            }
+                            .menuStyle(.borderlessButton)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 0)
+                Button(action: onOpen) {
+                    HStack { Spacer(); Label("Ouvrir le dossier", systemImage: "folder"); Spacer() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(Theme.Space.md)
+        }
+        .background(Theme.surface)
+    }
+
+    @ViewBuilder
+    private func row(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+            Text(value).font(Theme.small).foregroundStyle(Theme.textPrimary).lineLimit(2)
+        }
+    }
+}
+
+struct FileThumbnail: View {
+    let url: URL
+    let fallbackIcon: String
+    let fallbackColor: Color
+    let iconSize: CGFloat
+    @State private var image: NSImage?
+
+    private var isGIF: Bool { url.pathExtension.lowercased() == "gif" }
+
+    var body: some View {
+        ZStack {
+            if isGIF {
+                AnimatedGIFView(url: url)
+            } else if let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: fallbackIcon).font(.system(size: iconSize)).foregroundStyle(fallbackColor)
+            }
+        }
+        .task(id: url) { if !isGIF { await loadThumbnail() } }
+    }
+
+    private func loadThumbnail() async {
+        if let direct = NSImage(contentsOf: url), isBitmap(url) {
+            await MainActor.run { image = direct }
+            return
+        }
+        let request = QLThumbnailGenerator.Request(fileAt: url,
+                                                   size: CGSize(width: 220, height: 150),
+                                                   scale: NSScreen.main?.backingScaleFactor ?? 2,
+                                                   representationTypes: .thumbnail)
+        do {
+            let representation = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: request)
+            await MainActor.run { image = representation.nsImage }
+        } catch {
+            await MainActor.run { image = nil }
+        }
+    }
+
+    private func isBitmap(_ url: URL) -> Bool {
+        ["png", "jpg", "jpeg", "gif", "heic", "webp", "tiff"].contains(url.pathExtension.lowercased())
     }
 }
 
@@ -824,6 +1900,7 @@ struct P2PRow: View {
     var onOpenThread: () -> Void = {}
     var inThread: Bool = false       // dans le panneau de fil : pas de bouton « N réponses »
     @State private var hovering = false
+    @State private var controlsHovering = false
     @State private var showPicker = false
 
     static let quickEmojis = ["👍", "❤️", "😂", "🎉", "👀", "✅", "🙏", "🔥"]
@@ -863,10 +1940,12 @@ struct P2PRow: View {
                     }
                 }
                 if message.attachment != nil {
-                    P2PAttachmentView(message: message)
+                    P2PAttachmentView(message: message, contactContext: contactKey)
                 }
                 if !message.text.isEmpty {
                     Text(formatted).textSelection(.enabled)
+                        .font(.system(size: 15))
+                        .foregroundStyle(Theme.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -901,35 +1980,117 @@ struct P2PRow: View {
                 }
             }
             Spacer(minLength: 0)
-            // Barre d'actions au survol (réagir / répondre dans un fil).
-            if hovering {
-                HStack(spacing: 2) {
-                    Button { showPicker = true } label: { Image(systemName: "face.smiling") }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $showPicker, arrowEdge: .top) {
-                            HStack(spacing: 4) {
-                                ForEach(Self.quickEmojis, id: \.self) { e in
-                                    Button { p2p.toggleReaction(e, on: message, targets: targets); showPicker = false }
-                                        label: { Text(e).font(.title3) }
-                                        .buttonStyle(.plain)
-                                }
-                            }.padding(8)
+        }
+        .padding(.horizontal, 12).padding(.vertical, showHeader ? 5 : 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(hovering ? Theme.hover.opacity(0.5) : .clear)
+        .overlay(alignment: .topTrailing) {
+            if hovering || showPicker {
+                HStack(spacing: 0) {
+                    ForEach(Self.quickEmojis, id: \.self) { e in
+                        EmojiHoverButton(emoji: e) {
+                            p2p.toggleReaction(e, on: message, targets: targets)
                         }
-                        .help("Réagir")
+                    }
+                    Button { showPicker.toggle() } label: {
+                        Image(systemName: "face.smiling").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 22, height: 20).help("Plus d'émojis")
+                    .popover(isPresented: $showPicker, arrowEdge: .top) {
+                        EmojiPalette {
+                            p2p.toggleReaction($0, on: message, targets: targets)
+                            showPicker = false
+                        }
+                    }
                     if !inThread {
-                        Button(action: onOpenThread) { Image(systemName: "arrowshape.turn.up.left") }
-                            .buttonStyle(.plain).help("Répondre dans un fil")
+                        Divider().frame(height: 12).padding(.horizontal, 2)
+                        Button(action: onOpenThread) {
+                            Image(systemName: "bubble.left").font(.system(size: 11))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                        .frame(width: 22, height: 20).help("Répondre dans un fil")
                     }
                 }
-                .foregroundStyle(Theme.textSecondary)
-                .padding(4)
-                .background(Capsule().fill(Theme.surface).shadow(color: .black.opacity(0.08), radius: 3))
-                .padding(.trailing, 8)
+                .padding(.horizontal, 3).padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 7).fill(Theme.surface)
+                        .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
+                )
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.separator, lineWidth: 0.5))
+                .padding(.trailing, 10)
+                .alignmentGuide(.top) { d in d[.top] + 14 }   // déplace la barre vers le haut MAIS conserve sa hit-area
+                .zIndex(10)
+                .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .topTrailing)))
+                .onHover { inside in
+                    controlsHovering = inside
+                    if inside { hovering = true }
+                }
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, showHeader ? 4 : 1)
-        .background(hovering ? Theme.hover.opacity(0.5) : .clear)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.12), value: showPicker)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside {
+                hovering = true
+            } else {
+                // Délai plus généreux pour traverser entre messages sans perdre la barre.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    if !controlsHovering && !showPicker {
+                        hovering = false
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Bouton emoji individuel dans la barre flottante : scale au hover pour
+/// retour visuel immédiat (façon Slack).
+struct EmojiHoverButton: View {
+    let emoji: String
+    var action: () -> Void
+    @State private var hovering = false
+    var body: some View {
+        Button(action: action) {
+            Text(emoji).font(.system(size: 14))
+                .scaleEffect(hovering ? 1.25 : 1.0)
+                .animation(.spring(response: 0.22, dampingFraction: 0.55), value: hovering)
+        }
+        .buttonStyle(.plain)
+        .frame(width: 22, height: 20)
+        .background(RoundedRectangle(cornerRadius: 4)
+            .fill(hovering ? Theme.surfaceAlt : Color.clear))
         .onHover { hovering = $0 }
+        .help("Réagir avec \(emoji)")
+    }
+}
+
+/// Palette emoji étendue (Slack-like) en pop-up : catégories + tap direct.
+struct EmojiPalette: View {
+    var onPick: (String) -> Void
+    static let palette: [(String, [String])] = [
+        ("Smileys", ["😀","😁","😂","🤣","😊","😍","😎","🤩","🥰","😘","😜","😇","🤔","🙄","😴","🤤","😭","😱","😡","🤯"]),
+        ("Gestes", ["👍","👎","👌","🤝","🙌","👏","🙏","🤞","✌️","🤘","👋","🤙","💪","👀","🫶","🤌"]),
+        ("Cœurs", ["❤️","🧡","💛","💚","💙","💜","🖤","🤍","💖","💕","💔","💯"]),
+        ("Objets", ["🎉","🔥","✨","⚡️","💡","💎","🎁","🎯","🚀","✅","❌","⚠️","🆗","🆕"]),
+        ("Nature", ["🐶","🐱","🦊","🦁","🐼","🐧","🐢","🐳","🌸","🌻","🌈","☀️","🌙","⭐️"]),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Self.palette, id: \.0) { (cat, list) in
+                Text(cat).font(Theme.tiny).foregroundStyle(Theme.textSecondary).padding(.top, 4)
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(28), spacing: 2), count: 10), spacing: 2) {
+                    ForEach(list, id: \.self) { e in
+                        Button { onPick(e) } label: { Text(e).font(.system(size: 18)) }
+                            .buttonStyle(.plain).frame(width: 28, height: 28)
+                    }
+                }
+            }
+        }
+        .padding(10).frame(width: 320)
     }
 }
 
@@ -938,6 +2099,9 @@ struct P2PRow: View {
 struct P2PAttachmentView: View {
     @EnvironmentObject var p2p: P2PEngine
     let message: P2PEngine.P2PMessage
+    /// Contexte (chat individuel ou salon) pour la synchro des commentaires P2P
+    /// d'un attachment image/vidéo. Renseigné par la vue parente.
+    var contactContext: String? = nil
     var att: P2PEngine.P2PAttachment { message.attachment! }
     var url: URL? { p2p.attachmentURL(message) }
     var downloaded: Bool { p2p.attachmentDownloaded(message) }
@@ -946,41 +2110,160 @@ struct P2PAttachmentView: View {
             $0.relPath == att.relPath && ($0.status == .waiting || $0.status == .transferring)
         }
     }
+    @State private var lightboxURL: URL?
+    @State private var videoReviewURL: URL?
+    @State private var imageReviewURL: URL?
+
+    private var ext: String { (att.fileName as NSString).pathExtension.lowercased() }
+    private var isPDF: Bool { ext == "pdf" }
+    private var isText: Bool {
+        ["txt","md","markdown","json","csv","log","rtf","xml","yaml","yml","swift","js","ts","py","sh","html","css"].contains(ext)
+    }
+    private var isAudio: Bool {
+        ["m4a","mp3","wav","aac","caf","aiff","aif","ogg","opus"].contains(ext)
+    }
 
     var body: some View {
         Group {
-            if downloaded, let url, att.isVideo {
-                VideoBubble(url: url)
+            if downloaded, let url, isAudio {
+                AudioBubble(url: url)
+            } else if downloaded, let url, att.isVideo {
+                VideoBubble(url: url).frame(width: 360, height: 220)
+                    .overlay(alignment: .topLeading) {
+                        CommentCountBadge(messageID: message.id, isImage: false).padding(8)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { NSWorkspace.shared.open(url) }
+                    .onTapGesture { videoReviewURL = url }
+                    .help("Clic : ouvrir en grand avec commentaires · Double-clic : app par défaut")
             } else if downloaded, let url, att.isRive {
-                RiveBubble(url: url)
+                RiveBubble(url: url).frame(width: 360, height: 260)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { NSWorkspace.shared.open(url) }
+                    .onTapGesture { lightboxURL = url }
+            } else if downloaded, let url, ext == "gif" {
+                AnimatedGIFView(url: url)
+                    .frame(maxWidth: 360, maxHeight: 280)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(alignment: .topLeading) {
+                        CommentCountBadge(messageID: message.id, isImage: true).padding(8)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { NSWorkspace.shared.open(url) }
+                    .onTapGesture { imageReviewURL = url }
+                    .help("Clic : agrandir + commenter · Double-clic : ouvrir dans l'app par défaut")
             } else if downloaded, let url, att.isImage, let img = NSImage(contentsOf: url) {
                 Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 280, maxHeight: 220)
+                    .frame(maxWidth: 360, maxHeight: 280)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .onTapGesture { NSWorkspace.shared.open(url) }
+                    .overlay(alignment: .topLeading) {
+                        CommentCountBadge(messageID: message.id, isImage: true).padding(8)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { NSWorkspace.shared.open(url) }
+                    .onTapGesture { imageReviewURL = url }
+                    .help("Clic : agrandir + commenter/annoter · Double-clic : ouvrir dans l'app par défaut")
+            } else if downloaded, let url, isPDF {
+                VStack(alignment: .leading, spacing: 0) {
+                    PDFPreview(url: url).frame(width: 360, height: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { NSWorkspace.shared.open(url) }
+                        .onTapGesture { lightboxURL = url }
+                    docFooter(url: url)
+                }
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.06)))
+            } else if downloaded, let url, isText {
+                VStack(alignment: .leading, spacing: 0) {
+                    TextPreview(url: url).frame(width: 360, height: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { NSWorkspace.shared.open(url) }
+                        .onTapGesture { lightboxURL = url }
+                    docFooter(url: url)
+                }
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.06)))
             } else if downloaded, let url {
                 Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
-                    Label("\(att.fileName) (\(formatBytes(att.size)))", systemImage: "doc.fill")
+                    HStack(spacing: 10) {
+                        Image(systemName: "doc.fill").font(.title3).foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(att.fileName).font(.callout.weight(.medium)).lineLimit(1)
+                            Text(formatBytes(att.size)).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 12)
+                        Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary)
+                    }
+                    .padding(10).frame(maxWidth: 360, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.12)))
                 }.buttonStyle(.plain)
             } else {
-                HStack(spacing: 8) {
-                    Image(systemName: att.isVideo ? "video" : (att.isImage ? "photo" : "doc"))
-                    VStack(alignment: .leading) {
-                        Text(att.fileName).lineLimit(1)
+                HStack(spacing: 10) {
+                    Image(systemName: att.isVideo ? "video.fill" : (att.isImage ? "photo.fill" : (isPDF ? "doc.richtext.fill" : "doc.fill")))
+                        .font(.title3)
+                        .foregroundStyle(att.isVideo ? .pink : (att.isImage ? .blue : (isPDF ? .red : .gray)))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(att.fileName).font(.callout.weight(.medium)).lineLimit(1)
                         Text(formatBytes(att.size)).font(.caption2).foregroundStyle(.secondary)
                     }
+                    Spacer(minLength: 12)
                     if pending {
                         ProgressView().controlSize(.small)
                     } else if !message.fromMe {
                         Button { p2p.downloadAttachment(message) } label: {
-                            Image(systemName: "arrow.down.circle.fill")
-                        }.buttonStyle(.plain)
+                            Image(systemName: "arrow.down.circle.fill").font(.title3)
+                        }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
                     }
                 }
-                .padding(8)
+                .padding(10).frame(maxWidth: 360, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.15)))
             }
         }
+        .sheet(item: Binding(
+            get: { lightboxURL.map(IdentifiedURL.init) },
+            set: { lightboxURL = $0?.url }
+        )) { iu in
+            FileLightbox(url: iu.url) { lightboxURL = nil }
+                .frame(minWidth: 800, minHeight: 540)
+        }
+        .sheet(item: Binding(
+            get: { videoReviewURL.map(IdentifiedURL.init) },
+            set: { videoReviewURL = $0?.url }
+        )) { iu in
+            VideoReviewSheet(url: iu.url, messageID: message.id,
+                             syncTargets: commentSyncTargets()) { videoReviewURL = nil }
+                .frame(minWidth: 980, minHeight: 600)
+        }
+        .sheet(item: Binding(
+            get: { imageReviewURL.map(IdentifiedURL.init) },
+            set: { imageReviewURL = $0?.url }
+        )) { iu in
+            ImageReviewSheet(url: iu.url, messageID: message.id,
+                             syncTargets: commentSyncTargets()) { imageReviewURL = nil }
+                .frame(minWidth: 980, minHeight: 600)
+        }
+    }
+
+    /// Destinataires P2P pour la synchro des commentaires de cet attachment :
+    /// - en chat 1:1, le partenaire (l'autre côté de la conversation)
+    /// - en salon, les membres du salon transmis via `contactContext` ??.
+    private func commentSyncTargets() -> [String] {
+        if let key = contactContext, !key.isEmpty { return [key] }
+        if let key = message.fromKey, !message.fromMe { return [key] }
+        return []
+    }
+
+    @ViewBuilder
+    private func docFooter(url: URL) -> some View {
+        HStack(spacing: 6) {
+            Text(att.fileName).font(.caption.weight(.medium)).lineLimit(1)
+            Text(formatBytes(att.size)).font(.caption2).foregroundStyle(.secondary)
+            Spacer()
+            Button { NSWorkspace.shared.open(url) } label: {
+                Image(systemName: "arrow.up.right.square")
+            }.buttonStyle(.plain).help("Ouvrir avec l'app par défaut")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
     }
 }
 
@@ -1180,7 +2463,7 @@ struct ProfilePanel: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.lg) {
-                AvatarView(name: p2p.name(for: contactKey), id: P2PEngine.uuid(forKey: contactKey), size: 76)
+                P2PAvatar(contactKey: contactKey, size: 76)
                     .overlay(alignment: .bottomTrailing) {
                         PresenceDot(online: p2p.isOnline(contactKey), size: 16).offset(x: 2, y: 2)
                     }
@@ -1300,11 +2583,39 @@ struct ContactRow: View {
     }
 }
 
+/// Avatar d'un contact P2P (résout la photo + le nom à jour automatiquement).
+struct P2PAvatar: View {
+    @EnvironmentObject var p2p: P2PEngine
+    let contactKey: String
+    var size: CGFloat = 28
+    var body: some View {
+        AvatarView(name: p2p.name(for: contactKey),
+                   id: P2PEngine.uuid(forKey: contactKey),
+                   size: size,
+                   photoURL: p2p.avatarURL(forKey: contactKey))
+    }
+}
+
+/// Mon avatar (photo si définie sinon initiales).
+struct MyAvatar: View {
+    @EnvironmentObject var p2p: P2PEngine
+    @EnvironmentObject var store: AppStore
+    var size: CGFloat = 28
+    var body: some View {
+        AvatarView(name: p2p.myName.isEmpty ? store.config.myName : p2p.myName,
+                   id: P2PEngine.uuid(forKey: p2p.myPublicKey.isEmpty ? store.config.myID.uuidString : p2p.myPublicKey),
+                   size: size,
+                   photoURL: p2p.myAvatarURL)
+    }
+}
+
 /// Avatar rond avec initiales, couleur stable dérivée de l'identité.
+/// Affiche une photo si `photoURL` est fourni.
 struct AvatarView: View {
     let name: String
     let id: UUID
     var size: CGFloat = 28
+    var photoURL: URL? = nil
 
     static let palette: [Color] = [
         .blue, .purple, .pink, .orange, .teal, .indigo, .green, .red, .cyan, .mint,
@@ -1323,14 +2634,20 @@ struct AvatarView: View {
     }
 
     var body: some View {
-        Circle()
-            .fill(color.gradient)
-            .frame(width: size, height: size)
-            .overlay {
-                Text(initials)
-                    .font(.system(size: size * 0.42, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
+        if let url = photoURL, let img = NSImage(contentsOf: url) {
+            Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+        } else {
+            Circle()
+                .fill(color.gradient)
+                .frame(width: size, height: size)
+                .overlay {
+                    Text(initials)
+                        .font(.system(size: size * 0.42, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+        }
     }
 }
 
@@ -2216,6 +3533,7 @@ struct MessageBody: View {
             if !message.text.isEmpty {
                 Text(formattedText)
                     .textSelection(.enabled)
+                    .font(.system(size: 15))
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -2232,6 +3550,7 @@ struct MessageRow: View {
     var replyCount: Int = 0
     var lastReplyDate: Date? = nil
     var onOpenThread: () -> Void = {}
+    @State private var hovering = false
 
     var isMine: Bool { message.fromID == store.config.myID }
     var senderColor: Color { AvatarView(name: message.fromName, id: message.fromID).color }
@@ -2275,7 +3594,35 @@ struct MessageRow: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12).padding(.vertical, showHeader ? 4 : 1)
+        .padding(.horizontal, 12).padding(.vertical, showHeader ? 5 : 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(hovering ? Theme.hover.opacity(0.5) : .clear)
+        .overlay(alignment: .topTrailing) {
+            if hovering {
+                HStack(spacing: 1) {
+                    Button(action: onOpenThread) {
+                        Image(systemName: "bubble.left").font(.system(size: 14))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 28, height: 26).help("Répondre dans un fil")
+                    Divider().frame(height: 14)
+                    Button(role: .destructive) { store.deleteMessage(message) } label: {
+                        Image(systemName: "trash").font(.system(size: 14))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 28, height: 26).help(isMine ? "Supprimer pour tout le monde" : "Supprimer pour moi")
+                }
+                .padding(.horizontal, 2).padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 8).fill(Theme.surface)
+                        .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                )
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.separator, lineWidth: 0.5))
+                .padding(.trailing, 10).offset(y: -3)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .contextMenu {
             Button { onOpenThread() } label: {
                 Label("Répondre dans un fil", systemImage: "arrowshape.turn.up.left")
@@ -2773,14 +4120,38 @@ struct SettingsContent: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Réglages").font(.title3.bold())
 
-            LabeledContent("Mon nom") {
-                TextField("Nom affiché chez tes contacts", text: Binding(
-                    get: { store.config.myName },
-                    set: { store.config.myName = $0 }
-                ))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 240)
+            // Mon profil : photo + nom modifiables.
+            HStack(spacing: Theme.Space.lg) {
+                Button { pickAvatar() } label: {
+                    ZStack {
+                        AvatarView(name: store.config.myName,
+                                   id: P2PEngine.uuid(forKey: p2p.myPublicKey.isEmpty ? store.config.myID.uuidString : p2p.myPublicKey),
+                                   size: 72,
+                                   photoURL: store.config.avatarPath.map { URL(fileURLWithPath: $0) })
+                        Circle().fill(Color.black.opacity(0.001)).frame(width: 72, height: 72)
+                            .overlay(alignment: .bottomTrailing) {
+                                Image(systemName: "camera.fill").font(.caption)
+                                    .padding(5).background(Circle().fill(Theme.accent)).foregroundStyle(.white)
+                            }
+                    }
+                }
+                .buttonStyle(.plain).help("Changer ma photo")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Mon profil").font(Theme.tiny).foregroundStyle(Theme.textSecondary)
+                    TextField("Mon nom", text: Binding(
+                        get: { store.config.myName },
+                        set: { store.config.myName = $0; p2p.setMyName($0) }
+                    ))
+                    .textFieldStyle(.roundedBorder).frame(width: 260)
+                    if store.config.avatarPath != nil {
+                        Button("Retirer ma photo") {
+                            store.config.avatarPath = nil; p2p.setMyAvatar(nil)
+                        }.font(Theme.small).buttonStyle(.plain).foregroundStyle(Theme.danger)
+                    }
+                }
+                Spacer()
             }
+            .padding(.bottom, 4)
 
             LabeledContent("Dossier partagé") {
                 HStack {
@@ -2864,13 +4235,17 @@ struct SettingsContent: View {
 
             Divider()
 
+            KDriveRelaySettingsSection()
+
+            Divider()
+
             LabeledContent("Debug") {
                 HStack {
                     Button("Journal de synchronisation…") { showLog = true }
-                    if store.hasDebugContact {
-                        Button("Retirer le contact fictif") { store.removeDebugContact() }
+                    if p2p.hasBot {
+                        Button("Retirer le Robot") { p2p.removeBot() }
                     } else {
-                        Button("Ajouter un contact fictif") { store.addDebugContact() }
+                        Button("Ajouter le Robot 🤖") { p2p.addBot() }
                     }
                 }
             }
@@ -2900,6 +4275,19 @@ struct SettingsContent: View {
         .frame(maxWidth: 600, alignment: .leading)
         .sheet(isPresented: $showLog) { SyncLogSheet() }
         .sheet(isPresented: $showP2P) { P2PPanel() }
+    }
+
+    private func pickAvatar() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        if let img = UTType(filenameExtension: "png"), let img2 = UTType(filenameExtension: "jpg") {
+            panel.allowedContentTypes = [img, img2, UTType.image]
+        }
+        guard panel.runModal() == .OK, let src = panel.url else { return }
+        let dst = P2PEngine.avatarsDir.appendingPathComponent("me-\(UUID().uuidString.prefix(8)).\(src.pathExtension)")
+        try? FileManager.default.copyItem(at: src, to: dst)
+        store.config.avatarPath = dst.path
+        p2p.setMyAvatar(dst.path)
     }
 
     private func pickFolder() -> URL? {

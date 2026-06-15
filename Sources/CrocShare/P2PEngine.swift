@@ -50,6 +50,9 @@ final class P2PEngine: ObservableObject {
         var fromKey: String? = nil
         /// Réponse en fil : id du message parent. nil = message racine.
         var replyTo: UUID? = nil
+        /// Identifiant de lot : messages consécutifs avec le même bundleId sont
+        /// affichés groupés (façon Slack), avec un bouton « Tout télécharger ».
+        var bundleId: UUID? = nil
     }
 
     /// Salon façon Slack : un nom + des membres (clés P2P).
@@ -72,6 +75,8 @@ final class P2PEngine: ObservableObject {
     /// Conversations P2P, indexées par clé publique (z32) du contact.
     @Published var chats: [String: [P2PMessage]] = [:] { didSet { saveChats() } }
     @Published var contactNames: [String: String] = [:] { didSet { saveNames() } }
+    /// Avatars reçus des contacts (chemins locaux dans Application Support/.../avatars/).
+    @Published var contactAvatars: [String: String] = [:] { didSet { saveAvatars() } }
     @Published var unread: [String: Int] = [:]
     @Published var log: [String] = []
 
@@ -87,6 +92,11 @@ final class P2PEngine: ObservableObject {
 
     /// Listes de fichiers partagés reçues des contacts (clé z32 → fichiers).
     @Published var remoteFiles: [String: [RemoteFile]] = [:] { didSet { saveRemoteFiles() } }
+    /// Suivi des partages explicites : chemin relatif → ensemble de clés de
+    /// contact destinataires. Sert uniquement à l'UI (icônes, "Partagé avec",
+    /// retrait) ; n'a aucun effet sur la visibilité réelle des fichiers (mon
+    /// dossier partagé est visible par tous mes contacts par défaut).
+    @Published var fileShares: [String: Set<String>] = [:] { didSet { saveFileShares() } }
     @Published var fileDownloads: [P2PDownload] = [] { didSet { saveDownloads() } }
     @Published var pairingState: PairingState = .idle
     @Published var channels: [P2PChannel] = [] { didSet { saveChannels() } }
@@ -95,6 +105,7 @@ final class P2PEngine: ObservableObject {
     @Published var reactions: [UUID: [String: [String]]] = [:]
 
     var myName: String = ""
+    var myAvatarPath: String?
     var sharedFolder: String?
     var downloadBase: String?
     /// reqId → (clé contact, chemin) pour router les fichiers reçus.
@@ -105,10 +116,47 @@ final class P2PEngine: ObservableObject {
 
     private var chatsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-chats.json") }
     private var namesURL: URL { AppStore.supportDir.appendingPathComponent("p2p-names.json") }
+    private var avatarsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-avatars.json") }
+    static var avatarsDir: URL {
+        let u = AppStore.supportDir.appendingPathComponent("avatars")
+        try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+        return u
+    }
+    private func saveAvatars() {
+        if let data = try? JSONEncoder().encode(contactAvatars) { try? data.write(to: avatarsURL) }
+    }
+    func avatarURL(forKey key: String) -> URL? {
+        contactAvatars[key].map { URL(fileURLWithPath: $0) }
+    }
+    var myAvatarURL: URL? {
+        myAvatarPath.map { URL(fileURLWithPath: $0) }
+    }
     private var channelsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-channels.json") }
     private var reactionsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-reactions.json") }
     private var remoteFilesURL: URL { AppStore.supportDir.appendingPathComponent("p2p-remotefiles.json") }
     private var downloadsURL: URL { AppStore.supportDir.appendingPathComponent("p2p-downloads.json") }
+    private var fileSharesURL: URL { AppStore.supportDir.appendingPathComponent("p2p-fileshares.json") }
+
+    private func saveFileShares() {
+        let arrayMap = fileShares.mapValues { Array($0) }
+        if let data = try? JSONEncoder().encode(arrayMap) { try? data.write(to: fileSharesURL) }
+    }
+    /// Enregistre un partage déclaratif (UI only). Idempotent.
+    func recordShare(path: String, with key: String) {
+        var s = fileShares[path] ?? []
+        s.insert(key)
+        fileShares[path] = s
+    }
+    /// Retire un partage déclaratif. Le message déjà envoyé reste dans le
+    /// chat — on n'efface que l'indication "Partagé avec X" sur le fichier.
+    func revokeShare(path: String, with key: String) {
+        var s = fileShares[path] ?? []
+        s.remove(key)
+        if s.isEmpty { fileShares[path] = nil } else { fileShares[path] = s }
+    }
+    func sharedWith(path: String) -> [String] {
+        Array(fileShares[path] ?? []).sorted { name(for: $0) < name(for: $1) }
+    }
 
     private func saveChannels() {
         if let data = try? JSONEncoder().encode(channels) { try? data.write(to: channelsURL) }
@@ -145,6 +193,10 @@ final class P2PEngine: ObservableObject {
             // Un transfert interrompu repart en attente.
             fileDownloads = list.map { var d = $0; if d.status == .transferring { d.status = .waiting }; return d }
         }
+        if let data = try? Data(contentsOf: fileSharesURL),
+           let map = try? dec.decode([String: [String]].self, from: data) {
+            fileShares = map.mapValues { Set($0) }
+        }
         if let data = try? Data(contentsOf: chatsURL),
            let map = try? dec.decode([String: [P2PMessage]].self, from: data) {
             chats = map
@@ -152,6 +204,10 @@ final class P2PEngine: ObservableObject {
         if let data = try? Data(contentsOf: namesURL),
            let map = try? dec.decode([String: String].self, from: data) {
             contactNames = map
+        }
+        if let data = try? Data(contentsOf: avatarsURL),
+           let map = try? dec.decode([String: String].self, from: data) {
+            contactAvatars = map
         }
     }
 
@@ -241,6 +297,7 @@ final class P2PEngine: ObservableObject {
                 sendManifest(to: key)       // ma liste de fichiers
                 flushDownloads(to: key)     // téléchargements en attente
                 syncChannels(to: key)       // définitions de salons
+                sendProfile(to: key)        // mon nom + avatar (petite image)
             }
         case "peer.disconnected":
             if let key = event.params["contactKey"] as? String {
@@ -288,6 +345,20 @@ final class P2PEngine: ObservableObject {
                let chan = try? JSONDecoder().decode(P2PChannel.self, from: d) {
                 ingestChannel(chan)
             }
+        case "profile":
+            if let nm = payload["name"] as? String, !nm.isEmpty { contactNames[key] = nm }
+            if let b64 = payload["avatar"] as? String, let data = Data(base64Encoded: b64) {
+                let path = P2PEngine.avatarsDir.appendingPathComponent("\(key).jpg")
+                try? data.write(to: path)
+                contactAvatars[key] = path.path
+            }
+        case "vcomm":
+            // Commentaire vidéo/image diffusé par un pair.
+            guard let json = payload["op"] as? String,
+                  let data = json.data(using: .utf8),
+                  let op = try? JSONDecoder().decode(VideoCommentOp.self, from: data) else { return }
+            NotificationCenter.default.post(name: .crocShareVideoCommentArrived,
+                                            object: nil, userInfo: ["op": op])
         case "react":
             guard let idStr = payload["id"] as? String, let id = UUID(uuidString: idStr),
                   let emoji = payload["emoji"] as? String else { return }
@@ -305,6 +376,7 @@ final class P2PEngine: ObservableObject {
             let date = (payload["ts"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
             let ch = (payload["ch"] as? String).flatMap { UUID(uuidString: $0) }
             let rt = (payload["rt"] as? String).flatMap { UUID(uuidString: $0) }
+            let bd = (payload["bd"] as? String).flatMap { UUID(uuidString: $0) }
             var att: P2PAttachment?
             if let a = payload["att"] as? [String: Any], let fn = a["fileName"] as? String,
                let rp = a["relPath"] as? String {
@@ -315,7 +387,8 @@ final class P2PEngine: ObservableObject {
             if !thread.contains(where: { $0.id == id }) {
                 thread.append(P2PMessage(id: id, fromMe: false, fromName: name(for: key),
                                          text: text, date: date, delivered: true,
-                                         channel: ch, attachment: att, fromKey: key, replyTo: rt))
+                                         channel: ch, attachment: att, fromKey: key, replyTo: rt,
+                                         bundleId: bd))
                 thread.sort { $0.date < $1.date }
                 chats[key] = thread
                 if let ch { channelUnread[ch, default: 0] += 1 } else { unread[key, default: 0] += 1 }
@@ -341,13 +414,39 @@ final class P2PEngine: ObservableObject {
         }
     }
 
+    /// Envoie un lot de pièces jointes en une fois : tous les messages partagent
+    /// le même `bundleId`, le client les regroupe à l'affichage (« façon Slack »).
+    /// `text` est attaché uniquement au premier message du lot.
+    func sendBundle(_ files: [P2PAttachment], to key: String, text: String = "") {
+        guard !files.isEmpty else { return }
+        let bundle = UUID()
+        for (i, att) in files.enumerated() {
+            let msg = P2PMessage(id: UUID(), fromMe: true, fromName: myName,
+                                 text: i == 0 ? text : "",
+                                 date: Date().addingTimeInterval(Double(i) * 0.001),
+                                 delivered: key == Self.botKey,
+                                 attachment: att, fromKey: myPublicKey, replyTo: nil,
+                                 bundleId: bundle)
+            chats[key, default: []].append(msg)
+            if key == Self.botKey {
+                continue  // pas de delivery pour le bot
+            }
+            deliver(msg, to: key)
+        }
+    }
+
     func send(_ text: String, attachment: P2PAttachment? = nil, to key: String, replyTo: UUID? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || attachment != nil else { return }
         let msg = P2PMessage(id: UUID(), fromMe: true, fromName: myName,
-                             text: trimmed, date: Date(), delivered: false,
+                             text: trimmed, date: Date(), delivered: key == Self.botKey,
                              attachment: attachment, fromKey: myPublicKey, replyTo: replyTo)
         chats[key, default: []].append(msg)
+        if key == Self.botKey {
+            // Pas de delivery réseau pour le bot ; juste une réponse simulée.
+            botRespond(to: trimmed)
+            return
+        }
         deliver(msg, to: key)
     }
 
@@ -368,6 +467,16 @@ final class P2PEngine: ObservableObject {
         }
     }
 
+    /// Diffuse une opération sur commentaire vidéo/image aux pairs choisis.
+    /// Sérialise l'op en JSON dans `payload["op"]` (lisible par les pairs).
+    func broadcastCommentOp(_ opData: Data, to keys: [String]) {
+        guard let opJSON = String(data: opData, encoding: .utf8) else { return }
+        let payload: [String: Any] = ["k": "vcomm", "op": opJSON]
+        for key in keys where key != myPublicKey && key != Self.botKey {
+            Task { try? await bridge?.request("peer.send", ["contactKey": key, "payload": payload]) }
+        }
+    }
+
     private func deliver(_ msg: P2PMessage, to key: String) {
         var payload: [String: Any] = [
             "k": "msg", "id": msg.id.uuidString, "t": msg.text,
@@ -375,6 +484,7 @@ final class P2PEngine: ObservableObject {
         ]
         if let ch = msg.channel { payload["ch"] = ch.uuidString }
         if let rt = msg.replyTo { payload["rt"] = rt.uuidString }
+        if let bd = msg.bundleId { payload["bd"] = bd.uuidString }
         if let a = msg.attachment {
             payload["att"] = ["fileName": a.fileName, "relPath": a.relPath, "size": a.size]
         }
@@ -382,6 +492,9 @@ final class P2PEngine: ObservableObject {
             _ = try? await bridge?.request("peer.send", ["contactKey": key, "payload": payload])
             // Délivré confirmé par l'ack ; sinon renvoyé à la prochaine connexion.
         }
+        // Relai asynchrone (opt-in) : si le contact est hors ligne, double le
+        // message via kDrive. Le contact le décrochera à sa prochaine session.
+        enqueueRelayIfOffline(messageID: msg.id, payload: payload, to: key)
     }
 
     // MARK: - Réactions emoji
@@ -520,9 +633,20 @@ final class P2PEngine: ObservableObject {
 
     // MARK: - Fichiers (Phase 4) — partage à la demande sur le tunnel P2P
 
-    func configure(sharedFolder: String?, downloadBase: String?) {
+    func configure(sharedFolder: String?, downloadBase: String?, avatarPath: String? = nil) {
         self.sharedFolder = sharedFolder
         self.downloadBase = downloadBase
+        self.myAvatarPath = avatarPath
+    }
+
+    func setMyName(_ name: String) {
+        myName = name
+        for key in contacts where isOnline(key) { sendProfile(to: key) }
+    }
+
+    func setMyAvatar(_ path: String?) {
+        myAvatarPath = path
+        for key in contacts where isOnline(key) { sendProfile(to: key) }
     }
 
     /// Scanne mon dossier partagé (exclut le dossier de réception et les .croc).
@@ -546,6 +670,25 @@ final class P2PEngine: ObservableObject {
             }
         }
         return files.sorted { $0.path < $1.path }
+    }
+
+    /// Envoie mon profil (nom + avatar redimensionné en JPG ~120px) au pair.
+    func sendProfile(to key: String) {
+        var payload: [String: Any] = ["k": "profile", "name": myName]
+        if let path = myAvatarPath, let img = NSImage(contentsOfFile: path) {
+            let side: CGFloat = 120
+            let dest = NSImage(size: NSSize(width: side, height: side))
+            dest.lockFocus()
+            img.draw(in: NSRect(x: 0, y: 0, width: side, height: side),
+                     from: .zero, operation: .copy, fraction: 1.0)
+            dest.unlockFocus()
+            if let tiff = dest.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let jpg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.7]) {
+                payload["avatar"] = jpg.base64EncodedString()
+            }
+        }
+        Task { try? await bridge?.request("peer.send", ["contactKey": key, "payload": payload]) }
     }
 
     /// Mes propres fichiers partagés (contenu de mon dossier partagé).

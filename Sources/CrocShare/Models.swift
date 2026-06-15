@@ -151,6 +151,8 @@ struct PairingPayload: Codable {
 struct AppConfig: Codable {
     var myID: UUID = UUID()
     var myName: String = NSFullUserName()
+    /// Chemin absolu d'une photo d'avatar (copiée dans Application Support/CrocShare/avatars/).
+    var avatarPath: String?
     var sharedFolder: String?
     var downloadFolder: String?
     /// Relai croc auto-hébergé (`croc relay`), ex. "monserveur.fr:9009".
@@ -161,6 +163,9 @@ struct AppConfig: Codable {
     var hostRelay: Bool? = false
     /// Moteur expérimental P2P (Hyperswarm) — coexiste avec croc, masqué par défaut.
     var experimentalP2P: Bool? = false
+    /// Relai asynchrone kDrive (store-and-forward pour contacts hors-ligne).
+    /// Opt-in : le PAT est dans le Trousseau, jamais sérialisé ici.
+    var kdriveRelay: KDriveRelayConfig? = nil
 }
 
 func formatBytes(_ bytes: Int64) -> String {

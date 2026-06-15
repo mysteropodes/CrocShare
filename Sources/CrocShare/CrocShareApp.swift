@@ -7,6 +7,12 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var store: AppStore?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard ProcessInfo.processInfo.environment["CROCSHARE_DEV_PREVIEW"] == "1" else { return }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let store = Self.store else { return }
         for url in urls {
@@ -73,7 +79,17 @@ struct CrocShareApp: App {
                     // (code conservé en réserve, plus démarré).
                     p2p.enable(displayName: store.config.myName)
                     p2p.configure(sharedFolder: store.config.sharedFolder,
-                                  downloadBase: store.mirrorRootURL.path)
+                                  downloadBase: store.mirrorRootURL.path,
+                                  avatarPath: store.config.avatarPath)
+                    p2p.bootRelay(config: store.config.kdriveRelay ?? KDriveRelayConfig())
+                    p2p.restoreBotPresenceIfNeeded()
+                    if ProcessInfo.processInfo.environment["CROCSHARE_DEV_PREVIEW"] == "1" {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            NSApp.setActivationPolicy(.regular)
+                            NSApp.windows.first?.makeKeyAndOrderFront(nil)
+                            NSApp.activate(ignoringOtherApps: true)
+                        }
+                    }
                 }
         }
 

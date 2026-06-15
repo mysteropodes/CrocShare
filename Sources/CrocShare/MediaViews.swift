@@ -2,6 +2,130 @@ import SwiftUI
 import AVKit
 import WebKit
 import RiveRuntime
+import PDFKit
+
+/// Vue NSImageView wrappée pour lire les GIF animés (SwiftUI Image les fige).
+struct AnimatedGIFView: NSViewRepresentable {
+    let url: URL
+    func makeNSView(context: Context) -> NSImageView {
+        let v = NSImageView()
+        v.imageScaling = .scaleProportionallyUpOrDown
+        v.animates = true
+        v.canDrawSubviewsIntoLayer = true
+        return v
+    }
+    func updateNSView(_ nsView: NSImageView, context: Context) {
+        if nsView.image == nil {
+            nsView.image = NSImage(contentsOf: url)
+            nsView.animates = true
+        }
+    }
+}
+
+/// Preview universel basé sur l'extension : image, vidéo, Rive, PDF, texte, ou
+/// vignette fallback. À utiliser quand on a un fichier local prêt à afficher.
+struct RichFilePreview: View {
+    let url: URL
+    var maxHeight: CGFloat = 260
+    var ext: String { url.pathExtension.lowercased() }
+
+    var body: some View {
+        Group {
+            switch ext {
+            case "gif":
+                AnimatedGIFView(url: url).frame(maxHeight: maxHeight)
+            case "png","jpg","jpeg","heic","webp","tiff", "bmp":
+                if let img = NSImage(contentsOf: url) {
+                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: maxHeight)
+                } else {
+                    fallback
+                }
+            case "mp4","mov","m4v","mkv":
+                VideoBubble(url: url).frame(maxHeight: maxHeight)
+            case "riv":
+                RiveBubble(url: url).frame(maxHeight: maxHeight)
+            case "pdf":
+                PDFPreview(url: url).frame(maxHeight: maxHeight)
+            case "txt","md","markdown","json","csv","log","rtf","xml","yaml","yml","swift","js","ts","py","sh","html","css":
+                TextPreview(url: url).frame(maxHeight: maxHeight)
+            default:
+                fallback
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var fallback: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.12))
+            Image(systemName: "doc.fill").font(.system(size: 48)).foregroundStyle(.secondary)
+        }
+        .frame(height: maxHeight)
+    }
+}
+
+/// Viewer PDF inline (PDFKit). Affiche la première page.
+struct PDFPreview: NSViewRepresentable {
+    let url: URL
+    func makeNSView(context: Context) -> PDFView {
+        let v = PDFView()
+        v.document = PDFDocument(url: url)
+        v.autoScales = true
+        v.displayMode = .singlePage
+        v.displayDirection = .vertical
+        v.backgroundColor = .clear
+        return v
+    }
+    func updateNSView(_ nsView: PDFView, context: Context) {
+        if nsView.document == nil { nsView.document = PDFDocument(url: url) }
+    }
+}
+
+/// Viewer texte simple, monospace pour code, tronqué aux N premiers Ko pour ne
+/// pas faire ramer l'UI sur des fichiers énormes.
+struct TextPreview: View {
+    let url: URL
+    @State private var content: String = ""
+    @State private var truncated = false
+    private let maxBytes = 64 * 1024
+
+    var body: some View {
+        ScrollView {
+            Text(content)
+                .font(.system(size: 12, design: monospaced ? .monospaced : .default))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+        }
+        .background(Color.gray.opacity(0.08))
+        .overlay(alignment: .bottom) {
+            if truncated {
+                Text("Aperçu tronqué (\(maxBytes / 1024) Ko)").font(.caption2)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(.thinMaterial))
+                    .padding(6)
+            }
+        }
+        .task(id: url) { await load() }
+    }
+
+    private var monospaced: Bool {
+        ["json","csv","log","md","markdown","xml","yaml","yml","swift","js","ts","py","sh","html","css"]
+            .contains(url.pathExtension.lowercased())
+    }
+
+    private func load() async {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+        let data = (try? handle.read(upToCount: maxBytes + 1)) ?? Data()
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        await MainActor.run {
+            truncated = size > maxBytes
+            content = String(data: data.prefix(maxBytes), encoding: .utf8) ?? "[binaire]"
+        }
+    }
+}
 
 /// Lecteur vidéo dans une bulle, basé sur AVPlayerView (AppKit).
 /// Le VideoPlayer de SwiftUI (_AVKit_SwiftUI) plante à l'initialisation de ses

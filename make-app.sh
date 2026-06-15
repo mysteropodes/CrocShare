@@ -68,6 +68,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSMinimumSystemVersion</key><string>13.1</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSUIElement</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>Pour enregistrer un message audio à envoyer à vos contacts.</string>
     <!-- ── Sparkle (mises à jour auto, même clé que RecentDrop) ───── -->
     <key>SUFeedURL</key>
     <string>https://raw.githubusercontent.com/mysteropodes/CrocShare/main/appcast.xml</string>
