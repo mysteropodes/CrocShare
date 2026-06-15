@@ -19,8 +19,12 @@ DOWNLOAD_URL="https://github.com/mysteropodes/CrocShare/releases/download/v${VER
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PRODUCT.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PRODUCT.app/Contents/Info.plist"
 # Re-signature de l'app (l'Info.plist vient de changer) — même identité que make-app.sh.
+# SIGN_IDENTITY est définie dans l'env (cf. make-app.sh).
+if [[ -z "$SIGN_IDENTITY" ]]; then
+    echo "❌ SIGN_IDENTITY non définie. Voir make-app.sh."; exit 1
+fi
 codesign --force --options runtime --timestamp \
-    --sign "Apple Development: cyrildrouinm@icloud.com (9D5K76CQ8M)" "$PRODUCT.app"
+    --sign "$SIGN_IDENTITY" "$PRODUCT.app"
 
 mkdir -p "$DIST"
 ZIP="$DIST/${PRODUCT}-${VERSION}.zip"

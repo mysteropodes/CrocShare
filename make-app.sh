@@ -145,7 +145,15 @@ else
 # les builds — indispensable pour Sparkle (l'updater refuse une identité qui
 # change) et pour le trousseau/pare-feu. Composants Sparkle signés un par un
 # (--deep casse les XPC services de Sparkle).
-SIGN_IDENTITY="Apple Development: cyrildrouinm@icloud.com (9D5K76CQ8M)"
+# Identité Apple Developer : à définir dans l'environnement (ex. dans ~/.zshrc).
+# Sparkle refuse une identité qui change entre versions, donc une seule cohérente.
+if [[ -z "$SIGN_IDENTITY" ]]; then
+    echo "❌ Variable d'environnement SIGN_IDENTITY manquante."
+    echo "   Définis-la (ex. dans ~/.zshrc) :"
+    echo "     export SIGN_IDENTITY=\"Apple Development: ton.email@example.com (TEAMID)\""
+    echo "   Ou lance un build LAB (sans signature stable) : LAB=1 ./make-app.sh"
+    exit 1
+fi
 
 SPARKLE_FW="$APP/Contents/Frameworks/Sparkle.framework"
 XPC_DIR="$SPARKLE_FW/Versions/B/XPCServices"
