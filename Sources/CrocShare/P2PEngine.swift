@@ -352,6 +352,24 @@ final class P2PEngine: ObservableObject {
                 try? data.write(to: path)
                 contactAvatars[key] = path.path
             }
+        case "call.invite", "call.accept", "call.reject",
+             "call.offer", "call.answer", "call.ice", "call.end":
+            // Signaling appels. CallEngine consomme et orchestre.
+            if let kind = payload["k"] as? String {
+                Task { @MainActor in
+                    CallEngine.shared.handleIncomingSignal(kind, payload: payload, from: key)
+                }
+            }
+        case "del":
+            // Suppression demandée par l'expéditeur. On retire le message
+            // partout où il apparaît (chat direct + tous les salons où il est
+            // référencé). Idempotent.
+            guard let idStr = payload["id"] as? String, let id = UUID(uuidString: idStr) else { return }
+            for k in chats.keys {
+                chats[k, default: []].removeAll { $0.id == id }
+            }
+            reactions[id] = nil
+            saveReactions()
         case "vcomm":
             // Commentaire vidéo/image diffusé par un pair.
             guard let json = payload["op"] as? String,
@@ -467,6 +485,33 @@ final class P2PEngine: ObservableObject {
         }
     }
 
+    /// Supprime un message de la conversation `contactKey`.
+    /// - Si le message est de moi : diffuse un payload `del` à tous les pairs
+    ///   concernés pour qu'ils le retirent aussi de leur fil.
+    /// - Si le message vient d'un pair : suppression locale uniquement.
+    func deleteMessage(_ msg: P2PMessage, contactKey: String) {
+        // Retrait local.
+        chats[contactKey, default: []].removeAll { $0.id == msg.id }
+        // Si c'est un message à moi : on propage la suppression aux autres.
+        guard msg.fromMe else { return }
+        let payload: [String: Any] = ["k": "del", "id": msg.id.uuidString]
+        // Cible : la conversation directe = le contactKey. Pour un message de salon,
+        // on propage à chaque membre.
+        let targets: [String]
+        if let ch = msg.channel, let channel = channels.first(where: { $0.id == ch }) {
+            targets = channel.memberKeys.filter { $0 != myPublicKey }
+            // Retirer aussi dans les fils des autres membres locaux.
+            for k in targets {
+                chats[k, default: []].removeAll { $0.id == msg.id }
+            }
+        } else {
+            targets = [contactKey]
+        }
+        for key in targets where key != Self.botKey {
+            Task { try? await bridge?.request("peer.send", ["contactKey": key, "payload": payload]) }
+        }
+    }
+
     /// Diffuse une opération sur commentaire vidéo/image aux pairs choisis.
     /// Sérialise l'op en JSON dans `payload["op"]` (lisible par les pairs).
     func broadcastCommentOp(_ opData: Data, to keys: [String]) {
@@ -527,6 +572,26 @@ final class P2PEngine: ObservableObject {
     }
 
     func markRead(_ key: String) { unread[key] = 0 }
+
+    /// Purge les messages plus vieux que `days` jours dans tous les fils.
+    /// `days == 0` → no-op (rétention illimitée).
+    func purgeOldMessages(olderThanDays days: Int) {
+        guard days > 0 else { return }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
+        var purged = 0
+        for key in chats.keys {
+            let before = chats[key]?.count ?? 0
+            chats[key]?.removeAll { $0.date < cutoff }
+            purged += before - (chats[key]?.count ?? 0)
+        }
+        if purged > 0 { addLog("Historique : \(purged) message(s) purgé(s) (> \(days) j)") }
+    }
+
+    /// Vider entièrement l'historique d'une conversation (local uniquement).
+    func clearConversation(_ key: String) {
+        chats[key] = []
+        unread[key] = 0
+    }
 
     func removeContact(_ key: String) {
         contacts.removeAll { $0 == key }

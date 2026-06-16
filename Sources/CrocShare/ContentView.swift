@@ -2011,6 +2011,18 @@ struct P2PRow: View {
                         .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
                         .frame(width: 22, height: 20).help("Répondre dans un fil")
                     }
+                    // Suppression : pour mes messages → diffusion ; pour ceux
+                    // d'un contact → suppression locale seulement.
+                    Divider().frame(height: 12).padding(.horizontal, 2)
+                    Button {
+                        let context = contactKey ?? message.fromKey ?? ""
+                        p2p.deleteMessage(message, contactKey: context)
+                    } label: {
+                        Image(systemName: "trash").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 22, height: 20)
+                    .help(message.fromMe ? "Supprimer pour tout le monde" : "Supprimer pour moi")
                 }
                 .padding(.horizontal, 3).padding(.vertical, 2)
                 .background(
@@ -2128,7 +2140,9 @@ struct P2PAttachmentView: View {
             if downloaded, let url, isAudio {
                 AudioBubble(url: url)
             } else if downloaded, let url, att.isVideo {
-                VideoBubble(url: url).frame(width: 360, height: 220)
+                VideoBubble(url: url)
+                    .aspectRatio(16/9, contentMode: .fit)
+                    .frame(maxWidth: 360, maxHeight: 240)
                     .overlay(alignment: .topLeading) {
                         CommentCountBadge(messageID: message.id, isImage: false).padding(8)
                     }
@@ -2137,7 +2151,8 @@ struct P2PAttachmentView: View {
                     .onTapGesture { videoReviewURL = url }
                     .help("Clic : ouvrir en grand avec commentaires · Double-clic : app par défaut")
             } else if downloaded, let url, att.isRive {
-                RiveBubble(url: url).frame(width: 360, height: 260)
+                RiveBubble(url: url)
+                    .frame(maxWidth: 360)
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) { NSWorkspace.shared.open(url) }
                     .onTapGesture { lightboxURL = url }
@@ -4232,6 +4247,40 @@ struct SettingsContent: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
+
+            Divider()
+
+            LabeledContent(L10n("settings.language")) {
+                Picker("", selection: Binding(
+                    get: { LocalizationManager.preferred },
+                    set: { LocalizationManager.preferred = $0 }
+                )) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(L10n(lang.displayKey)).tag(lang)
+                    }
+                }
+                .frame(width: 220)
+            }
+            Text(L10n("settings.language_restart_required"))
+                .font(.caption).foregroundStyle(.secondary)
+
+            LabeledContent("Rétention du chat") {
+                Picker("", selection: Binding(
+                    get: { store.config.chatRetentionDays ?? 0 },
+                    set: { store.config.chatRetentionDays = $0 }
+                )) {
+                    Text("Jamais (tout garder)").tag(0)
+                    Text("3 mois").tag(90)
+                    Text("6 mois").tag(180)
+                    Text("12 mois").tag(365)
+                }
+                .frame(width: 220)
+                .onChange(of: store.config.chatRetentionDays) { newValue in
+                    p2p.purgeOldMessages(olderThanDays: newValue ?? 0)
+                }
+            }
+            Text("Les messages plus vieux que cette durée sont effacés au démarrage de l'app (uniquement chez toi ; tes contacts gardent leur propre historique selon leur réglage).")
+                .font(.caption).foregroundStyle(.secondary)
 
             Divider()
 

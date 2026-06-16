@@ -931,7 +931,11 @@ struct ImageReviewSheet: View {
         HStack(spacing: 0) {
             ZStack {
                 Color.black.ignoresSafeArea()
-                if let img = NSImage(contentsOf: url) {
+                // GIF animés : Image(nsImage:) fige les frames → on passe par
+                // le wrapper NSImageView qui les anime.
+                if url.pathExtension.lowercased() == "gif" {
+                    AnimatedGIFView(url: url)
+                } else if let img = NSImage(contentsOf: url) {
                     Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
                 } else {
                     Text("Image illisible").foregroundStyle(.secondary)

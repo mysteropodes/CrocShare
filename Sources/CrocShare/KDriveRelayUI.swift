@@ -120,8 +120,16 @@ private struct KDriveRelayHelpSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Configurer le relai kDrive").font(.title3.bold())
             Group {
-                Text("1.  Va sur manager.infomaniak.com → ton compte → API et applications.")
-                Text("2.  Crée un Personal Access Token avec le scope `drive`.")
+                Text("1.  Va sur manager.infomaniak.com → ton profil → menu de gauche → **Tokens API**.")
+                Text("    ⚠️ PAS « Application API » (c'est pour les flux OAuth complets — pas utile ici).")
+                    .foregroundStyle(.secondary)
+                Text("2.  Clique « Créer un token » et coche ces scopes :")
+                Text("       • drive:file:read   (lister + télécharger)")
+                    .font(.system(.callout, design: .monospaced))
+                Text("       • drive:file:write  (uploader + supprimer)")
+                    .font(.system(.callout, design: .monospaced))
+                Text("    Si l'UI ne montre que `drive`, c'est le scope parent — il suffit.")
+                    .foregroundStyle(.secondary)
                 Text("3.  Note l'ID de ton Drive : il apparaît dans l'URL kdrive.infomaniak.com/app/drive/<ID>/.")
                 Text("4.  Dans le Drive, crée à la racine un dossier `crocshare-relay` (ou autre nom).")
                 Text("5.  Ouvre ce dossier dans le navigateur, son ID est dans l'URL .../files/<ID>.")

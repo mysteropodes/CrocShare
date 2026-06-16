@@ -1,0 +1,75 @@
+/* CrocShare — English */
+
+/* Sidebar */
+"sidebar.my_files" = "My shared files";
+"sidebar.shared_folders" = "Shared folders";
+"sidebar.rooms" = "ROOMS";
+"sidebar.direct_messages" = "DIRECT MESSAGES";
+"sidebar.shared_folders_section" = "SHARED FOLDERS";
+"sidebar.settings" = "Settings";
+"sidebar.no_room" = "No rooms";
+"sidebar.no_contact" = "No contacts";
+"sidebar.no_file_contact" = "No file contacts";
+"sidebar.app_subtitle" = "Encrypted P2P";
+"sidebar.unread_one" = "%d unread message";
+"sidebar.unread_many" = "%d unread messages";
+
+/* Settings */
+"settings.title" = "Settings";
+"settings.my_profile" = "My profile";
+"settings.my_name" = "My name";
+"settings.remove_photo" = "Remove my photo";
+"settings.change_photo" = "Change my photo";
+"settings.shared_folder" = "Shared folder";
+"settings.download_folder" = "CrocShare folder (downloaded files)";
+"settings.choose" = "Choose…";
+"settings.custom_relay" = "Custom relay";
+"settings.host_relay" = "Host relay on this Mac";
+"settings.relay_running" = "Relay running — local network: %@";
+"settings.relay_stopped" = "Relay stopped (is croc installed?)";
+"settings.croc" = "croc";
+"settings.croc_not_installed" = "Not installed";
+"settings.debug" = "Debug";
+"settings.sync_log" = "Sync log…";
+"settings.add_bot" = "Add Robot 🤖";
+"settings.remove_bot" = "Remove Robot";
+"settings.p2p_engine" = "P2P engine";
+"settings.p2p_diagnostic" = "Diagnostic…";
+"settings.p2p_connected" = "connected to network";
+"settings.p2p_starting" = "starting…";
+"settings.language" = "Language";
+"settings.language_system" = "System";
+"settings.language_french" = "Français";
+"settings.language_english" = "English";
+"settings.language_restart_required" = "Restart the app to apply the new language.";
+"settings.chat_retention" = "Chat retention";
+"settings.chat_retention_forever" = "Never (keep everything)";
+"settings.chat_retention_3m" = "3 months";
+"settings.chat_retention_6m" = "6 months";
+"settings.chat_retention_12m" = "12 months";
+"settings.chat_retention_help" = "Messages older than this duration are deleted when the app starts (locally only — your contacts keep their own history based on their setting).";
+
+/* Calls */
+"call.start" = "Start a call";
+"call.join" = "Join";
+"call.end" = "Hang up";
+"call.invite" = "Invite to call";
+"call.share_screen" = "Share screen";
+"call.mute" = "Mute mic";
+"call.unmute" = "Unmute mic";
+"call.camera_on" = "Turn camera on";
+"call.camera_off" = "Turn camera off";
+"call.incoming" = "Incoming call from %@";
+"call.calling" = "Calling…";
+"call.connected" = "Connected";
+"call.participants_one" = "%d participant";
+"call.participants_many" = "%d participants";
+"call.unavailable" = "Calls unavailable — feature in progress.";
+
+/* Common */
+"common.cancel" = "Cancel";
+"common.save" = "Save";
+"common.delete" = "Delete";
+"common.close" = "Close";
+"common.open" = "Open";
+"common.share" = "Share";

@@ -19,9 +19,16 @@ import os
 //   et le header d'auth — le reste du module reste identique.
 //
 // ── Comment obtenir un PAT Infomaniak ──────────────────────────────────────
-// 1. https://manager.infomaniak.com → ton compte → « API et applications »
-// 2. « Créer un token »
-// 3. Scope minimum : `drive` (lecture/écriture sur kDrive)
+// IMPORTANT — menu « Tokens API » (pas « Application API »). CrocShare ne fait
+// pas de flux OAuth2 redirect ; il consomme directement un Personal Access
+// Token en header Authorization: Bearer.
+//
+// 1. https://manager.infomaniak.com → ton profil → menu de gauche → « Tokens API ».
+// 2. « Créer un token ».
+// 3. Scopes requis (cocher les deux) :
+//      • drive:file:read   — lister les fichiers du dossier relai + télécharger
+//      • drive:file:write  — uploader puis supprimer après livraison
+//    Si l'UI n'expose que le scope parent `drive`, il englobe les deux.
 // 4. Note l'ID du Drive (visible dans l'URL https://kdrive.infomaniak.com/app/drive/<DRIVE_ID>/)
 // 5. Crée à la racine du Drive un dossier `crocshare-relay` et note son ID
 //    (URL : .../files/<FOLDER_ID>). Ce dossier servira de boîte commune.

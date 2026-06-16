@@ -23,6 +23,12 @@ struct FileLightbox: View {
                 if isVideo {
                     VideoBubble(url: url)
                         .frame(width: geo.size.width * 0.86, height: geo.size.height * 0.78)
+                } else if url.pathExtension.lowercased() == "riv" {
+                    // Pour Rive, on veut un cadre vraiment grand au lieu du
+                    // RichFilePreview qui s'adapte au maxHeight.
+                    RiveBubble(url: url, fixedSize: false)
+                        .frame(width: geo.size.width * 0.86, height: geo.size.height * 0.82)
+                        .padding(24)
                 } else {
                     RichFilePreview(url: url, maxHeight: geo.size.height * 0.86)
                         .padding(24)

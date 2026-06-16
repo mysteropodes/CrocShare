@@ -166,6 +166,9 @@ struct AppConfig: Codable {
     /// Relai asynchrone kDrive (store-and-forward pour contacts hors-ligne).
     /// Opt-in : le PAT est dans le Trousseau, jamais sérialisé ici.
     var kdriveRelay: KDriveRelayConfig? = nil
+    /// Rétention des messages de chat (en jours). 0 = jamais (conserver tout).
+    /// Évaluée au démarrage : tout message plus vieux est purgé.
+    var chatRetentionDays: Int? = 0
 }
 
 func formatBytes(_ bytes: Int64) -> String {

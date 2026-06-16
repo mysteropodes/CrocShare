@@ -83,6 +83,9 @@ struct CrocShareApp: App {
                                   avatarPath: store.config.avatarPath)
                     p2p.bootRelay(config: store.config.kdriveRelay ?? KDriveRelayConfig())
                     p2p.restoreBotPresenceIfNeeded()
+                    p2p.purgeOldMessages(olderThanDays: store.config.chatRetentionDays ?? 0)
+                    // Scaffolding appels : injecte la réf P2P.
+                    CallEngine.shared.p2p = p2p
                     if ProcessInfo.processInfo.environment["CROCSHARE_DEV_PREVIEW"] == "1" {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                             NSApp.setActivationPolicy(.regular)

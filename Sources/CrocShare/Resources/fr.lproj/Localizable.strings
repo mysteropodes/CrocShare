@@ -1,0 +1,75 @@
+/* CrocShare — français (locale par défaut) */
+
+/* Sidebar */
+"sidebar.my_files" = "Mes fichiers partagés";
+"sidebar.shared_folders" = "Dossiers partagés";
+"sidebar.rooms" = "SALONS";
+"sidebar.direct_messages" = "MESSAGES DIRECTS";
+"sidebar.shared_folders_section" = "DOSSIERS PARTAGÉS";
+"sidebar.settings" = "Réglages";
+"sidebar.no_room" = "Aucun salon";
+"sidebar.no_contact" = "Aucun contact";
+"sidebar.no_file_contact" = "Aucun contact fichier";
+"sidebar.app_subtitle" = "P2P chiffré";
+"sidebar.unread_one" = "%d message non lu";
+"sidebar.unread_many" = "%d messages non lus";
+
+/* Settings */
+"settings.title" = "Réglages";
+"settings.my_profile" = "Mon profil";
+"settings.my_name" = "Mon nom";
+"settings.remove_photo" = "Retirer ma photo";
+"settings.change_photo" = "Changer ma photo";
+"settings.shared_folder" = "Dossier partagé";
+"settings.download_folder" = "Dossier CrocShare (fichiers reçus)";
+"settings.choose" = "Choisir…";
+"settings.custom_relay" = "Relai personnalisé";
+"settings.host_relay" = "Relai sur ce Mac";
+"settings.relay_running" = "Relai actif — réseau local : %@";
+"settings.relay_stopped" = "Relai arrêté (croc installé ?)";
+"settings.croc" = "croc";
+"settings.croc_not_installed" = "Non installé";
+"settings.debug" = "Debug";
+"settings.sync_log" = "Journal de synchronisation…";
+"settings.add_bot" = "Ajouter le Robot 🤖";
+"settings.remove_bot" = "Retirer le Robot";
+"settings.p2p_engine" = "Moteur P2P";
+"settings.p2p_diagnostic" = "Diagnostic…";
+"settings.p2p_connected" = "connecté au réseau";
+"settings.p2p_starting" = "démarrage…";
+"settings.language" = "Langue";
+"settings.language_system" = "Système";
+"settings.language_french" = "Français";
+"settings.language_english" = "English";
+"settings.language_restart_required" = "Redémarre l'app pour appliquer la nouvelle langue.";
+"settings.chat_retention" = "Rétention du chat";
+"settings.chat_retention_forever" = "Jamais (tout garder)";
+"settings.chat_retention_3m" = "3 mois";
+"settings.chat_retention_6m" = "6 mois";
+"settings.chat_retention_12m" = "12 mois";
+"settings.chat_retention_help" = "Les messages plus vieux que cette durée sont effacés au démarrage de l'app (uniquement chez toi ; tes contacts gardent leur propre historique selon leur réglage).";
+
+/* Calls */
+"call.start" = "Démarrer un appel";
+"call.join" = "Rejoindre";
+"call.end" = "Raccrocher";
+"call.invite" = "Inviter à l'appel";
+"call.share_screen" = "Partager l'écran";
+"call.mute" = "Couper le micro";
+"call.unmute" = "Réactiver le micro";
+"call.camera_on" = "Activer la caméra";
+"call.camera_off" = "Désactiver la caméra";
+"call.incoming" = "Appel entrant de %@";
+"call.calling" = "Appel en cours…";
+"call.connected" = "Connecté";
+"call.participants_one" = "%d participant";
+"call.participants_many" = "%d participants";
+"call.unavailable" = "Appels indisponibles — fonctionnalité en préparation.";
+
+/* Common */
+"common.cancel" = "Annuler";
+"common.save" = "Enregistrer";
+"common.delete" = "Supprimer";
+"common.close" = "Fermer";
+"common.open" = "Ouvrir";
+"common.share" = "Partager";

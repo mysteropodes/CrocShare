@@ -4,21 +4,46 @@ import WebKit
 import RiveRuntime
 import PDFKit
 
-/// Vue NSImageView wrappée pour lire les GIF animés (SwiftUI Image les fige).
+/// GIF animé. Le wrapper NSImageView ne propage pas son intrinsicSize à
+/// SwiftUI quand on l'utilise seul ; on implémente `sizeThatFits` pour que
+/// SwiftUI choisisse une taille qui rentre dans le maxWidth/maxHeight du
+/// parent tout en préservant l'aspect ratio natif du GIF.
 struct AnimatedGIFView: NSViewRepresentable {
     let url: URL
+
     func makeNSView(context: Context) -> NSImageView {
         let v = NSImageView()
         v.imageScaling = .scaleProportionallyUpOrDown
         v.animates = true
         v.canDrawSubviewsIntoLayer = true
+        v.image = NSImage(contentsOf: url)
+        // Ne pas hugger : on veut bien remplir l'espace que SwiftUI donne.
+        v.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        v.setContentHuggingPriority(.defaultLow, for: .vertical)
+        v.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        v.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         return v
     }
+
     func updateNSView(_ nsView: NSImageView, context: Context) {
         if nsView.image == nil {
             nsView.image = NSImage(contentsOf: url)
             nsView.animates = true
         }
+    }
+
+    /// Taille proposée à SwiftUI : on encadre le GIF dans la proposition du
+    /// parent tout en respectant son aspect ratio (intrinsicSize de l'image).
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSImageView, context: Context) -> CGSize? {
+        let intrinsic = nsView.image?.size ?? CGSize(width: 320, height: 180)
+        guard intrinsic.width > 0, intrinsic.height > 0 else { return intrinsic }
+        let ratio = intrinsic.width / intrinsic.height
+        let w = proposal.width ?? intrinsic.width
+        let h = proposal.height ?? intrinsic.height
+        // Fit-inside : essaye d'occuper l'espace proposé sans dépasser l'aspect.
+        let byWidth = CGSize(width: w, height: w / ratio)
+        let byHeight = CGSize(width: h * ratio, height: h)
+        return byWidth.height <= h ? byWidth : byHeight
     }
 }
 
@@ -44,7 +69,7 @@ struct RichFilePreview: View {
             case "mp4","mov","m4v","mkv":
                 VideoBubble(url: url).frame(maxHeight: maxHeight)
             case "riv":
-                RiveBubble(url: url).frame(maxHeight: maxHeight)
+                RiveBubble(url: url, fixedSize: false).frame(maxHeight: maxHeight)
             case "pdf":
                 PDFPreview(url: url).frame(maxHeight: maxHeight)
             case "txt","md","markdown","json","csv","log","rtf","xml","yaml","yml","swift","js","ts","py","sh","html","css":
@@ -130,12 +155,13 @@ struct TextPreview: View {
 /// Lecteur vidéo dans une bulle, basé sur AVPlayerView (AppKit).
 /// Le VideoPlayer de SwiftUI (_AVKit_SwiftUI) plante à l'initialisation de ses
 /// métadonnées dans les apps construites hors Xcode — crash confirmé au rapport.
+/// La taille est délibérément flexible : le conteneur parent applique la
+/// frame souhaitée (chat : maxWidth 360 + aspectRatio ; lightbox : plein écran).
 struct VideoBubble: View {
     let url: URL
 
     var body: some View {
         PlayerContainer(url: url)
-            .frame(width: 300, height: 180)
             .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
@@ -159,8 +185,11 @@ private struct PlayerContainer: NSViewRepresentable {
 }
 
 /// Animation Rive (.riv) jouée directement dans la bulle (runtime officiel).
+/// `fixedSize` = true → taille bulle compacte (chat). false → s'étire au
+/// conteneur parent (lightbox/panel droit).
 struct RiveBubble: View {
     let url: URL
+    var fixedSize: Bool = true
     @State private var viewModel: RiveViewModel?
     @State private var failed = false
 
@@ -175,7 +204,7 @@ struct RiveBubble: View {
                 ProgressView()
             }
         }
-        .frame(width: 300, height: 220)
+        .modifier(RiveSizeModifier(fixedSize: fixedSize))
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.12)))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .onAppear {
@@ -189,6 +218,17 @@ struct RiveBubble: View {
             }
         }
         .onDisappear { viewModel = nil }
+    }
+}
+
+private struct RiveSizeModifier: ViewModifier {
+    let fixedSize: Bool
+    func body(content: Content) -> some View {
+        if fixedSize {
+            content.frame(width: 300, height: 220)
+        } else {
+            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 }
 

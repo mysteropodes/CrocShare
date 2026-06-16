@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "CrocShare",
+    defaultLocalization: "fr",
     platforms: [.macOS("13.1")],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
@@ -15,7 +16,10 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "RiveRuntime", package: "rive-ios")
             ],
-            path: "Sources/CrocShare"
+            path: "Sources/CrocShare",
+            resources: [
+                .process("Resources")
+            ]
         )
     ]
 )
