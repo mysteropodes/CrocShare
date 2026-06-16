@@ -2,40 +2,100 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:">
   <title>CrocShare</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="app">
+    <!-- ── SIDEBAR ─────────────────────────────────────────────────── -->
     <aside id="sidebar">
-      <div class="brand">
-        <div class="avatar" id="me-avatar">C</div>
+      <div class="sidebar-header" id="sidebar-header">
+        <button class="me-avatar" id="me-avatar" title="Changer ma photo">
+          <span id="me-initial">C</span>
+          <span class="camera-badge">📷</span>
+        </button>
         <div class="brand-text">
-          <div class="title">CrocShare</div>
-          <div class="subtitle" id="me-status">Démarrage…</div>
+          <div class="brand-title">CrocShare</div>
+          <div class="brand-subtitle" id="me-status">P2P chiffré</div>
         </div>
       </div>
+
+      <div class="sidebar-divider"></div>
+
       <nav class="nav">
-        <div class="section-title">Contacts</div>
-        <ul id="contacts-list">
-          <li class="empty">Aucun contact</li>
-        </ul>
-        <button id="add-contact-btn">+ Ajouter un contact</button>
-        <div class="section-title" style="margin-top: 16px">Salons</div>
-        <ul id="channels-list">
-          <li class="empty">Aucun salon</li>
-        </ul>
+        <button class="nav-item" data-route="myfiles">
+          <span class="left-accent"></span>
+          <span class="nav-icon">📁</span>
+          <span class="nav-label">Mes fichiers partagés</span>
+        </button>
+        <button class="nav-item" data-route="sharedfolders">
+          <span class="left-accent"></span>
+          <span class="nav-icon">👥</span>
+          <span class="nav-label">Dossiers partagés</span>
+        </button>
+
+        <div class="section">
+          <button class="section-header" data-section="rooms">
+            <span class="chev">▼</span>
+            <span class="section-icon">#</span>
+            <span class="section-title">SALONS</span>
+            <span class="section-add">+</span>
+          </button>
+          <ul class="section-list" id="rooms-list">
+            <li class="empty">Aucun salon</li>
+          </ul>
+        </div>
+
+        <div class="section">
+          <button class="section-header" data-section="dm">
+            <span class="chev">▼</span>
+            <span class="section-icon">💬</span>
+            <span class="section-title">MESSAGES DIRECTS</span>
+            <span class="section-add" id="add-contact-btn">+</span>
+          </button>
+          <ul class="section-list" id="contacts-list">
+            <li class="empty">Aucun contact</li>
+          </ul>
+        </div>
+
+        <div class="section">
+          <button class="section-header" data-section="folders">
+            <span class="chev">▼</span>
+            <span class="section-icon">📁</span>
+            <span class="section-title">DOSSIERS PARTAGÉS</span>
+            <span class="section-add">+</span>
+          </button>
+          <ul class="section-list" id="folders-list">
+            <li class="empty">Aucun contact fichier</li>
+          </ul>
+        </div>
       </nav>
+
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-footer">
+        <button class="nav-item" data-route="settings">
+          <span class="left-accent"></span>
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">Réglages</span>
+        </button>
+      </div>
     </aside>
 
+    <!-- ── CONTENT ─────────────────────────────────────────────────── -->
     <main id="content">
-      <div id="welcome">
-        <h1>CrocShare Windows</h1>
-        <p class="muted">Sélectionne un contact à gauche pour commencer à discuter.</p>
-        <p class="muted small">Cette version Windows utilise le même protocole P2P (Hyperswarm) que l'app macOS — interopérable entre les deux.</p>
+      <div id="welcome" class="welcome">
+        <div class="welcome-icon">⚡</div>
+        <h1>CrocShare</h1>
+        <p class="muted">Partage de dossier et chat en pair-à-pair,<br/>chiffré de bout en bout, sans serveur ni relai.</p>
+        <button id="welcome-pair" class="btn-primary">Ajouter un contact…</button>
       </div>
     </main>
+
+    <!-- ── RIGHT INFO PANEL ────────────────────────────────────────── -->
+    <aside id="right-panel" class="hidden">
+      <div class="right-content"></div>
+    </aside>
   </div>
 
   <script src="app.js" type="module"></script>
