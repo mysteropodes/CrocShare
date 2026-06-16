@@ -1,4 +1,9 @@
 import SwiftUI
+import WebRTC
+import AppKit
+import AVFoundation
+import CoreMedia
+import CoreVideo
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UI placeholder pour les appels. Branchée sur CallEngine.shared.
@@ -89,12 +94,14 @@ private struct ParticipantTile: View {
 
     var body: some View {
         ZStack {
-            // TODO: RTCMTLVideoView pour la piste vidéo de ce participant.
             RoundedRectangle(cornerRadius: 12)
                 .fill(LinearGradient(
                     colors: [.indigo.opacity(0.6), .purple.opacity(0.6)],
                     startPoint: .topLeading, endPoint: .bottomTrailing))
-            if !p.hasVideo {
+            if p.hasVideo, let track = p.videoTrack {
+                RTCVideoTrackView(track: track)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
                 Image(systemName: "person.crop.circle.fill")
                     .font(.system(size: 64)).foregroundStyle(.white.opacity(0.85))
             }
@@ -203,5 +210,150 @@ private struct CallControlBar: View {
                 .frame(width: 44, height: 44)
                 .background(Circle().fill(background))
         }.buttonStyle(.plain)
+    }
+}
+
+/// Pont SwiftUI vers un renderer custom. stasel/WebRTC ne ship pas
+/// RTCMTLNSVideoView dans la slice macOS du binaire, donc on implémente notre
+/// propre renderer via AVSampleBufferDisplayLayer (le frame i420 est converti
+/// en CMSampleBuffer puis enqueuel-é dans le display layer Metal).
+struct RTCVideoTrackView: NSViewRepresentable {
+    let track: RTCVideoTrack
+
+    func makeNSView(context: Context) -> CrocVideoRendererView {
+        let v = CrocVideoRendererView()
+        track.add(v)
+        return v
+    }
+    func updateNSView(_ nsView: CrocVideoRendererView, context: Context) {}
+    static func dismantleNSView(_ nsView: CrocVideoRendererView, coordinator: ()) {
+        // Track est retirée par ARC quand le caller la libère.
+    }
+}
+
+/// Renderer macOS basé sur AVSampleBufferDisplayLayer. Conforme à
+/// `RTCVideoRenderer` pour recevoir les frames depuis une RTCVideoTrack.
+final class CrocVideoRendererView: NSView, RTCVideoRenderer {
+    private let displayLayer = AVSampleBufferDisplayLayer()
+    private var displaySize: CGSize = .zero
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+    private func commonInit() {
+        wantsLayer = true
+        layer = CALayer()
+        displayLayer.videoGravity = .resizeAspectFill
+        layer?.addSublayer(displayLayer)
+    }
+    override func layout() {
+        super.layout()
+        displayLayer.frame = bounds
+    }
+
+    // MARK: - RTCVideoRenderer
+
+    func setSize(_ size: CGSize) {
+        DispatchQueue.main.async {
+            self.displaySize = size
+        }
+    }
+
+    func renderFrame(_ frame: RTCVideoFrame?) {
+        guard let frame else { return }
+        // Le buffer est natif en i420 (ou CVPixelBuffer pour la caméra macOS).
+        // On ne traite que les CVPixelBuffer ici (cas courant via
+        // RTCCameraVideoCapturer). Pour i420 distant, on convertit.
+        if let pb = pixelBuffer(from: frame) {
+            enqueue(pb, rotation: frame.rotation)
+        }
+    }
+
+    private func pixelBuffer(from frame: RTCVideoFrame) -> CVPixelBuffer? {
+        if let cvBuffer = frame.buffer as? RTCCVPixelBuffer {
+            return cvBuffer.pixelBuffer
+        }
+        // Frame i420 distante : on convertit en CVPixelBuffer NV12.
+        if let i420 = (frame.buffer as? RTCI420Buffer) ?? (frame.buffer as? RTCMutableI420Buffer) {
+            return CrocVideoRendererView.makeCVPixelBuffer(from: i420)
+        }
+        return nil
+    }
+
+    private func enqueue(_ pixelBuffer: CVPixelBuffer, rotation: RTCVideoRotation) {
+        var fmt: CMVideoFormatDescription?
+        let r = CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: pixelBuffer, formatDescriptionOut: &fmt)
+        guard r == noErr, let fmt else { return }
+        var timing = CMSampleTimingInfo(duration: .invalid,
+                                         presentationTimeStamp: CMTime(value: CMTimeValue(CFAbsoluteTimeGetCurrent() * 1000), timescale: 1000),
+                                         decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
+        let s = CMSampleBufferCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer, dataReady: true, makeDataReadyCallback: nil,
+            refcon: nil, formatDescription: fmt, sampleTiming: &timing, sampleBufferOut: &sample)
+        guard s == noErr, let sample else { return }
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true) as? [CFMutableDictionary],
+           let first = attachments.first {
+            CFDictionarySetValue(first,
+                                 Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+                                 Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
+        }
+        DispatchQueue.main.async {
+            self.displayLayer.enqueue(sample)
+        }
+    }
+
+    /// Convertit un I420 buffer en CVPixelBuffer YUV. Approximation simple
+    /// suffisante pour l'affichage (1 alloc par frame distant — à optimiser).
+    private static func makeCVPixelBuffer(from i420: RTCI420Buffer) -> CVPixelBuffer? {
+        let width = Int(i420.width), height = Int(i420.height)
+        var pb: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+            kCVPixelBufferMetalCompatibilityKey: true
+        ]
+        let r = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                                     kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                                     attrs as CFDictionary, &pb)
+        guard r == kCVReturnSuccess, let pb else { return nil }
+        CVPixelBufferLockBaseAddress(pb, [])
+        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        // Y plane
+        if let yDst = CVPixelBufferGetBaseAddressOfPlane(pb, 0) {
+            let yStride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+            i420.dataY.withMemoryRebound(to: UInt8.self, capacity: Int(i420.strideY) * height) { yPtr in
+                for row in 0..<height {
+                    memcpy(yDst.advanced(by: row * yStride),
+                           yPtr.advanced(by: row * Int(i420.strideY)),
+                           width)
+                }
+            }
+        }
+        // UV interleaved plane (NV12).
+        if let uvDst = CVPixelBufferGetBaseAddressOfPlane(pb, 1) {
+            let uvStride = CVPixelBufferGetBytesPerRowOfPlane(pb, 1)
+            let chromaH = height / 2
+            i420.dataU.withMemoryRebound(to: UInt8.self, capacity: Int(i420.strideU) * chromaH) { uPtr in
+                i420.dataV.withMemoryRebound(to: UInt8.self, capacity: Int(i420.strideV) * chromaH) { vPtr in
+                    for row in 0..<chromaH {
+                        let dstRow = uvDst.advanced(by: row * uvStride).assumingMemoryBound(to: UInt8.self)
+                        let uRow = uPtr.advanced(by: row * Int(i420.strideU))
+                        let vRow = vPtr.advanced(by: row * Int(i420.strideV))
+                        for col in 0..<(width / 2) {
+                            dstRow[col * 2]     = uRow[col]
+                            dstRow[col * 2 + 1] = vRow[col]
+                        }
+                    }
+                }
+            }
+        }
+        return pb
     }
 }

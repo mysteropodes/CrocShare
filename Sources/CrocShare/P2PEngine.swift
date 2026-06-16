@@ -512,6 +512,12 @@ final class P2PEngine: ObservableObject {
         }
     }
 
+    /// Envoie un payload arbitraire à un pair via le bridge. Helper utilisé
+    /// par CallEngine pour le signaling SDP/ICE.
+    func bridgeRequest(_ kind: String, _ params: [String: Any]) async throws {
+        _ = try await bridge?.request(kind, params)
+    }
+
     /// Diffuse une opération sur commentaire vidéo/image aux pairs choisis.
     /// Sérialise l'op en JSON dans `payload["op"]` (lisible par les pairs).
     func broadcastCommentOp(_ opData: Data, to keys: [String]) {

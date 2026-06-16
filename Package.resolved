@@ -1,5 +1,5 @@
 {
-  "originHash" : "9fa2531d43839e1b3f9a80ff57aeebb54db8172c8109c4e9338b799623601f39",
+  "originHash" : "4fc45950be72f65aa34587832328a17115e83b2b007c2675f624e0147737558e",
   "pins" : [
     {
       "identity" : "rive-ios",
@@ -17,6 +17,15 @@
       "state" : {
         "revision" : "6276ba2b404829d139c45ff98427cf90e2efc59b",
         "version" : "2.9.2"
+      }
+    },
+    {
+      "identity" : "webrtc",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/stasel/WebRTC.git",
+      "state" : {
+        "revision" : "b4f5a90c887bde68512b8f1a6d684b27b5597b76",
+        "version" : "125.0.0"
       }
     }
   ],

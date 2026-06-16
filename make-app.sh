@@ -44,6 +44,9 @@ SPARKLE_XCFW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x
 cp -R "$SPARKLE_XCFW" "$APP/Contents/Frameworks/Sparkle.framework"
 RIVE_XCFW=".build/artifacts/rive-ios/RiveRuntime/RiveRuntime.xcframework/macos-arm64_x86_64/RiveRuntime.framework"
 cp -R "$RIVE_XCFW" "$APP/Contents/Frameworks/RiveRuntime.framework"
+# WebRTC.framework pour les appels P2P (audio/vidéo + screen share).
+WEBRTC_XCFW=".build/artifacts/webrtc/WebRTC/WebRTC.xcframework/macos-x86_64_arm64/WebRTC.framework"
+cp -R "$WEBRTC_XCFW" "$APP/Contents/Frameworks/WebRTC.framework"
 install_name_tool -delete_rpath "@executable_path/../Frameworks" \
     "$APP/Contents/MacOS/CrocShare" 2>/dev/null || true
 install_name_tool -add_rpath "@executable_path/../Frameworks" \
@@ -69,6 +72,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>NSHighResolutionCapable</key><true/>
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>Pour enregistrer un message audio à envoyer à vos contacts.</string>
+    <key>NSCameraUsageDescription</key><string>Pour les appels vidéo avec vos contacts.</string>
+    <key>NSScreenCaptureUsageDescription</key><string>Pour partager votre écran pendant un appel.</string>
     <!-- ── Sparkle (mises à jour auto, même clé que RecentDrop) ───── -->
     <key>SUFeedURL</key>
     <string>https://raw.githubusercontent.com/mysteropodes/CrocShare/main/appcast.xml</string>
@@ -168,6 +173,7 @@ fi
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_FW/Versions/B/Updater.app"
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_FW"
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/RiveRuntime.framework"
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/WebRTC.framework"
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/bin/croc"
 # Runtime Node + addons natifs du compagnon (.node) signés un par un.
 # Node a besoin d'entitlements JIT (V8) et de pouvoir charger des addons .node

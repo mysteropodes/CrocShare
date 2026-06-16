@@ -1,0 +1,63 @@
+{
+  "name": "crocshare-windows",
+  "version": "0.1.0",
+  "description": "CrocShare Windows client (Electron) — same protocol as macOS SwiftUI app",
+  "main": "main.js",
+  "author": "mysteropodes",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "pack": "electron-builder --dir",
+    "build:win": "electron-builder --win nsis",
+    "build:mac": "electron-builder --mac dmg",
+    "release": "electron-builder --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.crocshare.app",
+    "productName": "CrocShare",
+    "directories": {
+      "output": "dist"
+    },
+    "extraResources": [
+      {
+        "from": "../core",
+        "to": "core",
+        "filter": ["**/*"]
+      }
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "icons/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "publisherName": "CrocShare"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "category": "public.app-category.social-networking",
+      "target": "dmg"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "mysteropodes",
+        "repo": "CrocShare"
+      }
+    ]
+  }
+}
