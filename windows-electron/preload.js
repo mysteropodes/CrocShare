@@ -28,5 +28,33 @@ contextBridge.exposeInMainWorld('crocshare', {
   // Infos plateforme.
   version: () => ipcRenderer.invoke('app:version'),
   platform: () => ipcRenderer.invoke('app:platform'),
-  storagePath: () => ipcRenderer.invoke('app:storagePath')
+  storagePath: () => ipcRenderer.invoke('app:storagePath'),
+  homePath: () => ipcRenderer.invoke('app:home'),
+
+  // Config locale (équivalent AppConfig Mac).
+  config: {
+    get: () => ipcRenderer.invoke('config:get'),
+    set: (obj) => ipcRenderer.invoke('config:set', obj),
+  },
+
+  // Token kDrive (chiffré via safeStorage).
+  pat: {
+    get: () => ipcRenderer.invoke('pat:get'),
+    set: (v) => ipcRenderer.invoke('pat:set', v),
+    clear: () => ipcRenderer.invoke('pat:clear'),
+  },
+
+  // Dialogues système.
+  dialog: {
+    pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
+    pickFile: (options) => ipcRenderer.invoke('dialog:pickFile', options),
+  },
+
+  // Relance l'app (changement de langue).
+  relaunch: () => ipcRenderer.invoke('app:relaunch'),
+
+  // Test connexion kDrive.
+  kdrive: {
+    test: (params) => ipcRenderer.invoke('kdrive:test', params),
+  },
 });

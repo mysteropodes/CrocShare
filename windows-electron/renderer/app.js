@@ -1,7 +1,12 @@
 // CrocShare Windows — renderer.
 // L'objectif visuel : coller à la version macOS (Theme.swift, ContentView.swift).
 
+import { loadLanguage } from './i18n.js';
+import { renderSettings } from './settings.js';
+
 const { request, onEvent, openExternal, version, platform } = window.crocshare;
+// Expose le state au module Settings.
+window.crocshareState = null;
 
 const state = {
   myPublicKey: '',
@@ -21,6 +26,14 @@ const QUICK_TEST_BOT = {
 // ── Bootstrap ─────────────────────────────────────────────────
 async function init() {
   console.log('CrocShare Windows', await version(), '/', await platform());
+
+  // Charge la langue avant tout rendu.
+  await loadLanguage();
+
+  // Lit la config persistée
+  const cfg = await window.crocshare.config.get();
+  if (cfg.myName) state.myName = cfg.myName;
+  window.crocshareState = state;
 
   // P2P companion start
   try {
@@ -170,7 +183,17 @@ function renderContent() {
   const right = document.getElementById('right-panel');
   const r = state.selectedRoute;
 
-  if (!r || r === 'myfiles' || r === 'sharedfolders' || r === 'settings') {
+  if (r === 'settings') {
+    right.classList.add('hidden');
+    content.innerHTML = '';
+    renderSettings(content, {
+      refreshHeader: renderSidebar,
+      refreshView: () => renderContent(),
+    });
+    return;
+  }
+
+  if (!r || r === 'myfiles' || r === 'sharedfolders') {
     content.innerHTML = `
       <div id="welcome" class="welcome">
         <div class="welcome-icon">⚡</div>
