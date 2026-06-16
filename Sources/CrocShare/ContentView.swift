@@ -23,6 +23,7 @@ struct ContentView: View {
     @State private var threadRoot: P2PEngine.P2PMessage?
     @State private var showPairing = false
     @State private var showNewChannel = false
+    @StateObject private var callEngine = CallEngine.shared
 
     var body: some View {
         NavigationSplitView {
@@ -40,6 +41,17 @@ struct ContentView: View {
         .background(WindowConfigurator())
         .sheet(isPresented: $showPairing) { P2PPairingSheet() }
         .sheet(isPresented: $showNewChannel) { P2PChannelSheet(existing: nil) }
+        .sheet(isPresented: Binding(
+            get: {
+                switch callEngine.state {
+                case .idle, .ended: return false
+                default: return true
+                }
+            },
+            set: { _ in }
+        )) {
+            CallSheet()
+        }
         .frame(minWidth: 980, minHeight: 600)
         .onChange(of: route) { _ in threadRoot = nil }
     }
@@ -158,12 +170,12 @@ struct UnifiedSidebar: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
-                    navItem(title: "Mes fichiers partagés", icon: "folder.fill",
+                    navItem(title: L10n("Mes fichiers partagés"), icon: "folder.fill",
                             active: route == .myFiles) { contactPane = .files; route = .myFiles }
-                    navItem(title: "Dossiers partagés", icon: "person.2.fill",
+                    navItem(title: L10n("Dossiers partagés"), icon: "person.2.fill",
                             active: route == .allSharedFolders) { contactPane = .files; route = .allSharedFolders }
 
-                    sectionHeader("SALONS", icon: "number", expanded: $showChannels) { showNewChannel = true }
+                    sectionHeader(L10n("SALONS"), icon: "number", expanded: $showChannels) { showNewChannel = true }
                     if showChannels {
                         ForEach(p2p.channels) { chan in
                             navItem(title: chan.name, icon: "number", active: route == .channel(chan.id),
@@ -173,13 +185,13 @@ struct UnifiedSidebar: View {
                         if p2p.channels.isEmpty { emptyHint("Aucun salon") }
                     }
 
-                    sectionHeader("MESSAGES DIRECTS", icon: "bubble.left.fill", expanded: $showContacts) { showPairing = true }
+                    sectionHeader(L10n("MESSAGES DIRECTS"), icon: "bubble.left.fill", expanded: $showContacts) { showPairing = true }
                     if showContacts {
                         ForEach(p2p.contacts, id: \.self) { key in contactItem(key, pane: .chat) }
                         if p2p.contacts.isEmpty { emptyHint("Aucun contact") }
                     }
 
-                    sectionHeader("DOSSIERS PARTAGÉS", icon: "folder.fill", expanded: $showSharedFolders) { showPairing = true }
+                    sectionHeader(L10n("DOSSIERS PARTAGÉS"), icon: "folder.fill", expanded: $showSharedFolders) { showPairing = true }
                     if showSharedFolders {
                         ForEach(p2p.contacts, id: \.self) { key in sharedFolderItem(key) }
                         if p2p.contacts.isEmpty { emptyHint("Aucun contact fichier") }
@@ -191,7 +203,7 @@ struct UnifiedSidebar: View {
 
             Divider()
             VStack(spacing: 1) {
-                navItem(title: "Réglages", icon: "gearshape", active: route == .settings) { route = .settings }
+                navItem(title: L10n("Réglages"), icon: "gearshape", active: route == .settings) { route = .settings }
             }
             .padding(.horizontal, Theme.Space.sm).padding(.vertical, Theme.Space.sm)
         }
@@ -487,7 +499,12 @@ struct P2PChatView: View {
             ConversationHeaderBar(title: p2p.name(for: contactKey),
                                   online: p2p.isOnline(contactKey),
                                   contactKey: contactKey,
-                                  subtitle: p2p.isOnline(contactKey) ? "en ligne · chiffré P2P" : "hors ligne")
+                                  subtitle: p2p.isOnline(contactKey) ? "en ligne · chiffré P2P" : "hors ligne",
+                                  trailing: AnyView(
+                                    HStack(spacing: 12) {
+                                        CallButton(contactKey: contactKey, contactName: p2p.name(for: contactKey))
+                                    }
+                                  ))
             Divider()
             P2PTranscript(messages: messages, contactKey: contactKey,
                           targets: [contactKey], onOpenThread: onOpenThread)
@@ -4251,15 +4268,20 @@ struct SettingsContent: View {
             Divider()
 
             LabeledContent(L10n("settings.language")) {
-                Picker("", selection: Binding(
-                    get: { LocalizationManager.preferred },
-                    set: { LocalizationManager.preferred = $0 }
-                )) {
-                    ForEach(AppLanguage.allCases) { lang in
-                        Text(L10n(lang.displayKey)).tag(lang)
+                HStack {
+                    Picker("", selection: Binding(
+                        get: { LocalizationManager.preferred },
+                        set: { LocalizationManager.preferred = $0 }
+                    )) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text(L10n(lang.displayKey)).tag(lang)
+                        }
+                    }
+                    .frame(width: 180)
+                    Button(L10n("settings.relaunch_now")) {
+                        LocalizationManager.relaunch()
                     }
                 }
-                .frame(width: 220)
             }
             Text(L10n("settings.language_restart_required"))
                 .font(.caption).foregroundStyle(.secondary)

@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import AppKit
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Localization runtime override.
@@ -84,6 +85,26 @@ enum LocalizationManager {
         case .system: return .current
         case .fr:     return Locale(identifier: "fr")
         case .en:     return Locale(identifier: "en")
+        }
+    }
+
+    /// Relance l'app pour appliquer la nouvelle langue (NSWorkspace.openApplication
+    /// puis NSApp.terminate). Le path du bundle courant est utilisé.
+    static func relaunch() {
+        let bundleURL = Bundle.main.bundleURL
+        let task = Process()
+        task.launchPath = "/usr/bin/open"
+        task.arguments = [bundleURL.path]
+        do {
+            try task.run()
+            // Petit délai pour laisser le launch se faire avant kill.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                NSApp.terminate(nil)
+                // Fallback : si terminate est bloqué (sandbox, etc.) on force.
+                exit(0)
+            }
+        } catch {
+            NSApp.terminate(nil)
         }
     }
 }

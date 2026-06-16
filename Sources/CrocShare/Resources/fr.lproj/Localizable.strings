@@ -42,6 +42,7 @@
 "settings.language_french" = "Français";
 "settings.language_english" = "English";
 "settings.language_restart_required" = "Redémarre l'app pour appliquer la nouvelle langue.";
+"settings.relaunch_now" = "Relancer maintenant";
 "settings.chat_retention" = "Rétention du chat";
 "settings.chat_retention_forever" = "Jamais (tout garder)";
 "settings.chat_retention_3m" = "3 mois";
