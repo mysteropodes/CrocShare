@@ -4,7 +4,7 @@
 import { loadLanguage } from './i18n.js';
 import { renderSettings } from './settings.js';
 
-const { request, onEvent, openExternal, version, platform } = window.crocshare;
+const { request, onEvent, openExternal, version, platform, storagePath, config } = window.crocshare;
 // Expose le state au module Settings.
 window.crocshareState = null;
 
@@ -35,21 +35,39 @@ async function init() {
   if (cfg.myName) state.myName = cfg.myName;
   window.crocshareState = state;
 
-  // P2P companion start
+  // Init du compagnon P2P : équivalent du `start` côté Mac.
+  // On passe storagePath et displayName ; la seed est persistée localement
+  // pour conserver l'identité entre sessions.
   try {
-    const r = await request('start', { displayName: state.myName });
+    const stPath = await storagePath();
+    const seed = cfg.identitySeed || undefined;
+    const r = await request('init', {
+      storagePath: stPath,
+      displayName: state.myName,
+      seed,
+    });
     state.myPublicKey = r?.publicKey || '';
+    // Si le core a généré une nouvelle seed (1er lancement), on la stocke.
+    if (r?.seed) {
+      await window.crocshare.config.set({ identitySeed: r.seed });
+    }
   } catch (e) {
-    console.warn('start failed (utiliser preview UI sans core):', e);
+    console.warn('init failed:', e);
   }
 
   // Contact démo pour visualiser le rendu si le core n'est pas joignable.
   state.contacts = [QUICK_TEST_BOT];
 
-  // Tentative de chargement des contacts réels.
+  // Tentative de chargement des contacts réels (le core renvoie { contacts: [...] }).
   try {
-    const list = await request('contacts.list', {});
-    if (Array.isArray(list) && list.length) state.contacts = list;
+    const r = await request('contacts.list', {});
+    if (r?.contacts?.length) {
+      state.contacts = r.contacts.map(c => ({
+        key: c.key,
+        name: c.name || c.key.slice(0, 8),
+        online: false,
+      }));
+    }
   } catch (e) { /* ignore */ }
 
   onEvent(handleCoreEvent);
@@ -60,11 +78,26 @@ async function init() {
 
 function handleCoreEvent(evt) {
   switch (evt.event) {
-    case 'peer.connected': setContactOnline(evt.params.contactKey, true); break;
+    case 'peer.connected': onPeerConnected(evt.params); break;
     case 'peer.disconnected': setContactOnline(evt.params.contactKey, false); break;
     case 'peer.message': onIncomingMessage(evt.params); break;
     case 'core.ready': state.myPublicKey = evt.params.publicKey; break;
+    case 'core.error':
+      console.warn('core.error:', evt.params); break;
   }
+}
+
+function onPeerConnected({ contactKey, name }) {
+  let c = state.contacts.find(x => x.key === contactKey);
+  if (!c) {
+    // Premier pairing : le contact arrive en live.
+    c = { key: contactKey, name: name || contactKey.slice(0, 8), online: true };
+    state.contacts.push(c);
+  } else {
+    c.online = true;
+    if (name) c.name = name;
+  }
+  renderSidebar();
 }
 
 // ── Sidebar render ──────────────────────────────────────────
@@ -407,12 +440,16 @@ async function addContactFlow() {
   const code = prompt("Saisis le code d'appairage reçu (cs1-…)\nLaisse vide pour en générer un :");
   if (code === null) return;
   if (code.trim()) {
-    try { await request('pairing.join', { code: code.trim() }); }
-    catch (e) { alert('Échec : ' + e.message); }
+    try {
+      await request('pairing.acceptInvite', { invite: code.trim() });
+      alert('Demande envoyée — patiente que ton contact accepte.');
+    } catch (e) { alert('Échec : ' + e.message); }
   } else {
     try {
-      const r = await request('pairing.create', {});
-      prompt('Transmets ce code à ton contact :', r?.code || '');
+      const r = await request('pairing.createInvite', {});
+      // Le code est typiquement r.invite (cs1-…). Affiche-le pour partage.
+      const inviteCode = r?.invite || r?.code || JSON.stringify(r);
+      prompt('Transmets ce code à ton contact :', inviteCode);
     } catch (e) { alert('Échec : ' + e.message); }
   }
 }

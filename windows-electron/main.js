@@ -131,7 +131,7 @@ function dispatchFromCore(msg) {
   if (msg.id != null && pending.has(msg.id)) {
     const { resolve, reject } = pending.get(msg.id);
     pending.delete(msg.id);
-    if (msg.error) reject(new Error(msg.error));
+    if (msg.error) reject(new Error(msg.error?.message || msg.error || 'RPC error'));
     else resolve(msg.result);
     return;
   }
@@ -140,12 +140,13 @@ function dispatchFromCore(msg) {
 }
 
 let nextReqId = 1;
-function coreRequest(kind, params = {}) {
+function coreRequest(method, params = {}) {
   return new Promise((resolve, reject) => {
     if (!coreProc) return reject(new Error('core not running'));
     const id = nextReqId++;
     pending.set(id, { resolve, reject });
-    coreProc.stdin.write(JSON.stringify({ id, kind, params }) + '\n');
+    // Protocole : { id, method, params } — cf. core/rpc.js
+    coreProc.stdin.write(JSON.stringify({ id, method, params }) + '\n');
     setTimeout(() => {
       if (pending.has(id)) {
         pending.delete(id);
