@@ -212,6 +212,35 @@ ipcMain.handle('app:relaunch', () => {
   app.exit(0);
 });
 
+// Stats sur un fichier (taille en bytes), utilisé pour les attachments.
+ipcMain.handle('file:stat', async (_e, filePath) => {
+  try {
+    const s = await fs.promises.stat(filePath);
+    return { size: s.size, mtime: s.mtimeMs };
+  } catch (e) { return { size: 0, error: e.message }; }
+});
+
+// File URL → for displaying received attachments in renderer.
+ipcMain.handle('file:url', (_e, filePath) => {
+  // Convertit en file:// — Chromium peut lire les fichiers locaux.
+  return 'file://' + filePath.replace(/\\/g, '/');
+});
+
+// Sauvegarde un ArrayBuffer dans un fichier temporaire de l'app (utilisé
+// pour les messages audio enregistrés via MediaRecorder).
+ipcMain.handle('file:saveTempBuffer', async (_e, name, buffer) => {
+  try {
+    const tmpDir = path.join(app.getPath('userData'), 'tmp');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const target = path.join(tmpDir, name);
+    fs.writeFileSync(target, Buffer.from(buffer));
+    return target;
+  } catch (e) {
+    console.warn('saveTempBuffer failed:', e);
+    return null;
+  }
+});
+
 // ── Test kDrive (ping /2/drive/{id}) ───────────────────────────────
 ipcMain.handle('kdrive:test', async (_e, { driveID }) => {
   const pat = readPAT();

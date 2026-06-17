@@ -57,4 +57,9 @@ contextBridge.exposeInMainWorld('crocshare', {
   kdrive: {
     test: (params) => ipcRenderer.invoke('kdrive:test', params),
   },
+
+  // File helpers (pour attachments).
+  fileStat: (filePath) => ipcRenderer.invoke('file:stat', filePath),
+  fileUrl: (filePath) => ipcRenderer.invoke('file:url', filePath),
+  saveTempBuffer: (name, buffer) => ipcRenderer.invoke('file:saveTempBuffer', name, buffer),
 });

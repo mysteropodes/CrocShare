@@ -1,8 +1,14 @@
 // CrocShare Windows — renderer.
 // L'objectif visuel : coller à la version macOS (Theme.swift, ContentView.swift).
 
-import { loadLanguage } from './i18n.js';
+import { loadLanguage, L } from './i18n.js';
 import { renderSettings } from './settings.js';
+import { openPairingModal } from './pairing.js';
+import {
+  buildHoverBar, showEmojiPicker, toggleReaction, sendReaction,
+  sendDelete, pickAndSendAttachment, sendAttachmentFromPath,
+  AudioRecorder, renderAttachment, openLightbox
+} from './chat-features.js';
 
 const { request, onEvent, openExternal, version, platform, storagePath, config } = window.crocshare;
 // Expose le state au module Settings.
@@ -12,10 +18,15 @@ const state = {
   myPublicKey: '',
   myName: 'Moi',
   contacts: [],          // [{ key, name, online }]
-  channels: [],          // [{ id, name, members }]
-  chats: {},             // contactKey → [{ id, fromMe, fromName, text, date }]
-  selectedRoute: null,   // 'myfiles' | 'sharedfolders' | 'settings' | { kind:'contact', key } | { kind:'channel', id }
+  channels: [],
+  chats: {},             // contactKey → [{ id, fromMe, fromName, text, date, attachment?, replyTo?, reactions? }]
+  selectedRoute: null,
+  threadRoot: null,      // message racine ouvert dans le thread panel
+  audioRec: null,        // AudioRecorder en cours
 };
+
+// Path local pour fichiers reçus (download base)
+let DOWNLOAD_BASE = '';
 
 const QUICK_TEST_BOT = {
   key: 'robot-test-bot-0000000000000000000000000000000000000000000000000',
@@ -81,9 +92,22 @@ function handleCoreEvent(evt) {
     case 'peer.connected': onPeerConnected(evt.params); break;
     case 'peer.disconnected': setContactOnline(evt.params.contactKey, false); break;
     case 'peer.message': onIncomingMessage(evt.params); break;
+    case 'peer.fileReceived': onFileReceived(evt.params); break;
     case 'core.ready': state.myPublicKey = evt.params.publicKey; break;
     case 'core.error':
       console.warn('core.error:', evt.params); break;
+  }
+}
+
+function onFileReceived({ contactKey, relPath, absPath }) {
+  // Trouve le message correspondant et marque l'attachment comme téléchargé.
+  const list = state.chats[contactKey] || [];
+  const msg = list.find(m => m.attachment?.relPath === relPath);
+  if (msg) {
+    msg.attachment.localPath = absPath;
+    if (state.selectedRoute?.kind === 'contact' && state.selectedRoute?.key === contactKey) {
+      renderMessages(contactKey);
+    }
   }
 }
 
@@ -254,8 +278,8 @@ function renderChat(key) {
   content.innerHTML = `
     <div class="chat-header">
       <div class="header-avatar-wrap">
-        <div class="header-avatar">${escapeHTML((c.name || '?').slice(0, 1).toUpperCase())}</div>
-        <span class="presence-dot"></span>
+        <div class="header-avatar">${escapeHTML(headerAvatarText(c))}</div>
+        <span class="presence-dot" style="${c.online ? '' : 'background:#6B6B70'}"></span>
       </div>
       <div>
         <div class="name">${escapeHTML(c.name || c.key.slice(0, 8))}</div>
@@ -263,10 +287,11 @@ function renderChat(key) {
       </div>
       <div class="toolbar">
         <button title="Appeler" id="call-btn">📞</button>
+        <button title="Infos" id="info-btn">ℹ️</button>
       </div>
     </div>
     <div class="chat-body" id="chat-body"></div>
-    <div class="composer">
+    <div class="composer" id="composer">
       <div class="formatting">
         <button title="Gras"><b>B</b></button>
         <button title="Italique"><i>I</i></button>
@@ -276,11 +301,11 @@ function renderChat(key) {
         <button title="Liste à puces">•</button>
         <button title="Liste numérotée">1.</button>
         <button title="Lien">🔗</button>
-        <button title="Emoji">😀</button>
+        <button title="Emoji" id="composer-emoji">😀</button>
       </div>
       <div class="input-row">
-        <button class="icon-btn" title="Joindre un fichier">📎</button>
-        <button class="icon-btn" title="Message audio">🎙</button>
+        <button class="icon-btn" title="Joindre un fichier" id="attach-btn">📎</button>
+        <button class="icon-btn" title="Message audio" id="mic-btn">🎙</button>
         <textarea id="composer-input" rows="1" placeholder="Message P2P à ${escapeHTML(c.name || '')}…"></textarea>
         <button class="send-btn" id="send-btn" title="Envoyer">➤</button>
       </div>
@@ -295,8 +320,46 @@ function renderChat(key) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCurrent(); }
   });
   document.getElementById('send-btn').addEventListener('click', sendCurrent);
+
+  // Emoji picker du composer
+  document.getElementById('composer-emoji').addEventListener('click', e => {
+    showEmojiPicker(e.currentTarget, (emoji) => {
+      input.value += emoji;
+      input.focus();
+    });
+  });
+
+  // Attach
+  document.getElementById('attach-btn').addEventListener('click', async () => {
+    await pickAndSendAttachment({
+      contactKey: key,
+      scope: c.name || c.key.slice(0, 8),
+      sendMessage: ({ attachment }) => buildAndSendMessage(key, '', attachment),
+    });
+  });
+
+  // Mic
+  document.getElementById('mic-btn').addEventListener('click', () => toggleAudioRecording(key, c));
+
   document.getElementById('call-btn').addEventListener('click', () => {
-    alert('Appels : disponibles dans la prochaine version Electron.');
+    alert('Appels : prévus dans la prochaine version Electron.');
+  });
+
+  // Drag-drop : accepte un fichier sur la zone chat-body
+  const body = document.getElementById('chat-body');
+  body.addEventListener('dragover', e => { e.preventDefault(); });
+  body.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if (!f) return;
+    // En Electron, on récupère f.path (webContents permission).
+    const path = f.path;
+    if (!path) return;
+    await sendAttachmentFromPath(path, {
+      contactKey: key,
+      scope: c.name || c.key.slice(0, 8),
+      sendMessage: ({ attachment }) => buildAndSendMessage(key, '', attachment),
+    });
   });
 
   // Auto-grow textarea
@@ -309,11 +372,18 @@ function renderChat(key) {
   renderProfilePanel(c);
 }
 
+function headerAvatarText(c) {
+  if (c.name && c.name.includes('🤖')) return '🤖';
+  return (c.name || c.key).slice(0, 1).toUpperCase();
+}
+
 function renderMessages(key) {
   const body = document.getElementById('chat-body');
   if (!body) return;
   body.innerHTML = '';
-  const msgs = state.chats[key] || [];
+  // On n'affiche que les top-level (pas les réponses thread)
+  const all = state.chats[key] || [];
+  const msgs = all.filter(m => !m.replyTo);
   if (msgs.length === 0) {
     body.innerHTML = `<div class="day-divider"><div class="pill">Aujourd'hui</div></div>`;
   }
@@ -321,26 +391,102 @@ function renderMessages(key) {
   let lastSender = null;
   for (const m of msgs) {
     const showHeader = m.fromName !== lastSender;
-    const row = document.createElement('div');
-    row.className = 'msg-row' + (showHeader ? ' with-header' : '');
-    const initial = (m.fromName || '?').slice(0, 1).toUpperCase();
-    const isBot = m.fromName && m.fromName.includes('🤖');
-    row.innerHTML = `
-      <div class="avatar-slot">
-        ${showHeader ? `<div class="msg-avatar">${escapeHTML(isBot ? '🤖' : initial)}</div>` : ''}
-      </div>
-      <div class="msg-content">
-        ${showHeader ? `<div class="msg-header">
-          <span class="msg-name">${escapeHTML(m.fromName || 'Moi')}</span>
-          <span class="msg-time">${formatTime(m.date)}</span>
-        </div>` : ''}
-        <div class="msg-text">${escapeHTML(m.text)}</div>
-      </div>
-    `;
+    const row = renderMessageRow(m, { showHeader, contactKey: key, threadCount: replyCount(all, m.id) });
     body.appendChild(row);
     lastSender = m.fromName;
   }
   body.scrollTop = body.scrollHeight;
+}
+
+function renderMessageRow(m, { showHeader, contactKey, threadCount }) {
+  const row = document.createElement('div');
+  row.className = 'msg-row' + (showHeader ? ' with-header' : '');
+  const initial = (m.fromName || '?').slice(0, 1).toUpperCase();
+  const isBot = m.fromName && m.fromName.includes('🤖');
+  const avatarTxt = isBot ? '🤖' : initial;
+
+  // Structure
+  const avatarSlot = document.createElement('div');
+  avatarSlot.className = 'avatar-slot';
+  if (showHeader) {
+    avatarSlot.innerHTML = `<div class="msg-avatar">${escapeHTML(avatarTxt)}</div>`;
+  }
+  const content = document.createElement('div');
+  content.className = 'msg-content';
+  if (showHeader) {
+    content.innerHTML = `
+      <div class="msg-header">
+        <span class="msg-name">${escapeHTML(m.fromName || 'Moi')}</span>
+        <span class="msg-time">${formatTime(m.date)}</span>
+      </div>
+    `;
+  }
+  if (m.text) {
+    const txt = document.createElement('div');
+    txt.className = 'msg-text';
+    txt.textContent = m.text;
+    content.appendChild(txt);
+  }
+  if (m.attachment) {
+    const localUrl = m.attachment.localPath ? 'file://' + m.attachment.localPath.replace(/\\/g, '/') : null;
+    content.appendChild(renderAttachment(m.attachment, localUrl));
+  }
+  // Réactions
+  if (m.reactions && Object.keys(m.reactions).length) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg-reactions';
+    for (const [emoji, reactors] of Object.entries(m.reactions)) {
+      const pill = document.createElement('button');
+      const mine = reactors.includes(state.myPublicKey);
+      pill.className = 'react-pill' + (mine ? ' mine' : '');
+      pill.innerHTML = `${emoji}<span class="count">${reactors.length}</span>`;
+      pill.addEventListener('click', () => onReact(contactKey, m.id, emoji));
+      wrap.appendChild(pill);
+    }
+    content.appendChild(wrap);
+  }
+  // Bouton thread si réponses existent
+  if (threadCount > 0) {
+    const tb = document.createElement('button');
+    tb.style.cssText = 'background:transparent;border:1px solid #37373C;border-radius:8px;padding:3px 8px;color:#60A5FA;font-size:12px;margin-top:4px;cursor:pointer;';
+    tb.textContent = `💬 ${threadCount} réponse${threadCount > 1 ? 's' : ''}`;
+    tb.addEventListener('click', () => openThread(contactKey, m));
+    content.appendChild(tb);
+  }
+
+  row.appendChild(avatarSlot);
+  row.appendChild(content);
+
+  // Hover bar
+  row.appendChild(buildHoverBar({
+    messageId: m.id,
+    contactKey,
+    fromMe: m.fromMe,
+    onReact: (e) => onReact(contactKey, m.id, e),
+    onOpenPicker: (anchor) => showEmojiPicker(anchor, (e) => onReact(contactKey, m.id, e)),
+    onReply: () => openThread(contactKey, m),
+    onDelete: () => {
+      sendDelete(contactKey, m.id);
+      const list = state.chats[contactKey] || [];
+      const idx = list.findIndex(x => x.id === m.id);
+      if (idx >= 0) { list.splice(idx, 1); renderMessages(contactKey); }
+    }
+  }));
+
+  return row;
+}
+
+function replyCount(list, parentId) {
+  return list.filter(m => m.replyTo === parentId).length;
+}
+
+function onReact(contactKey, messageId, emoji) {
+  const m = findMessage(contactKey, messageId);
+  if (!m) return;
+  m.reactions = m.reactions || {};
+  const add = toggleReaction(m.reactions, emoji, state.myPublicKey, contactKey);
+  sendReaction(contactKey, messageId, emoji, add);
+  if (state.selectedRoute?.key === contactKey) renderMessages(contactKey);
 }
 
 async function sendCurrent() {
@@ -349,49 +495,236 @@ async function sendCurrent() {
   if (!text) return;
   const key = state.selectedRoute?.key;
   if (!key) return;
-
-  const id = crypto.randomUUID();
-  const msg = { id, fromMe: true, fromName: state.myName, text, date: Date.now() };
-  state.chats[key] = (state.chats[key] || []).concat(msg);
-  renderMessages(key);
+  await buildAndSendMessage(key, text, null);
   input.value = '';
   input.style.height = 'auto';
+}
+
+async function buildAndSendMessage(key, text, attachment, replyTo = null) {
+  const id = crypto.randomUUID();
+  const msg = {
+    id, fromMe: true, fromName: state.myName,
+    text: text || '', date: Date.now(),
+    attachment, replyTo, reactions: {},
+  };
+  state.chats[key] = (state.chats[key] || []).concat(msg);
+  if (state.selectedRoute?.key === key) renderMessages(key);
 
   // Echo "bot" si on parle au robot (UI demo).
   if (key === QUICK_TEST_BOT.key) {
     setTimeout(() => {
       const reply = {
         id: crypto.randomUUID(), fromMe: false, fromName: '🤖 Robot',
-        text: 'Reçu ! Le compagnon Node n\'est pas encore branché côté Electron, mais l\'UI fonctionne.',
-        date: Date.now()
+        text: "Reçu ! En P2P réel avec un pair distant, ton message a déjà été délivré.",
+        date: Date.now(), reactions: {}
       };
       state.chats[key].push(reply);
-      renderMessages(key);
+      if (state.selectedRoute?.key === key) renderMessages(key);
     }, 400);
   }
 
+  const payload = { k: 'msg', id, t: text, ts: msg.date };
+  if (attachment) payload.att = { fileName: attachment.fileName, relPath: attachment.relPath, size: attachment.size };
+  if (replyTo) payload.rt = replyTo;
   try {
-    await request('peer.send', {
-      contactKey: key,
-      payload: { k: 'msg', id, t: text, ts: msg.date }
+    await request('peer.send', { contactKey: key, payload });
+  } catch (e) {
+    console.warn('send failed:', e);
+  }
+}
+
+// ─── Audio recording ───────────────────────────────────────────────
+
+async function toggleAudioRecording(key, contact) {
+  const composer = document.getElementById('composer');
+  if (state.audioRec) {
+    // Stop + send
+    try {
+      const { buffer, ext } = await state.audioRec.stop();
+      state.audioRec = null;
+      composer.classList.remove('recording');
+      composer.querySelector('.recording-status')?.remove();
+      // Sauvegarde temporaire pour passer le path à peer.sendFile
+      const blob = new Blob([buffer]);
+      const url = URL.createObjectURL(blob);
+      // En Electron, on n'a pas écriture directe disque sans IPC. Cas simple :
+      // on attache juste la pièce-jointe locale via blob URL (lecture chez moi).
+      // Pour l'envoi P2P, on doit écrire sur disque d'abord.
+      const tmpName = `voice-${crypto.randomUUID().slice(0, 8)}.${ext}`;
+      const tmpPath = await window.crocshare.saveTempBuffer?.(tmpName, buffer)
+                      ?? null;
+      if (tmpPath) {
+        await sendAttachmentFromPath(tmpPath, {
+          contactKey: key,
+          scope: contact.name || contact.key.slice(0, 8),
+          sendMessage: ({ attachment }) => buildAndSendMessage(key, '', attachment),
+        });
+      } else {
+        // Fallback : juste un message texte de fallback
+        await buildAndSendMessage(key, `🎙 Message audio (${(buffer.byteLength/1024).toFixed(0)} Ko)`, null);
+      }
+    } catch (e) {
+      console.warn('audio stop failed:', e);
+    }
+    return;
+  }
+  try {
+    state.audioRec = new AudioRecorder();
+    await state.audioRec.start();
+    composer.classList.add('recording');
+    const status = document.createElement('div');
+    status.className = 'recording-status';
+    status.innerHTML = `
+      <span class="rec-dot"></span>
+      <span class="timer">0:00</span>
+      <button class="btn-sm" id="rec-cancel">Annuler</button>
+      <button class="btn-sm btn-primary-sm" id="rec-send">Envoyer</button>
+    `;
+    composer.appendChild(status);
+    state.audioRec.onTick = (s) => {
+      const t = status.querySelector('.timer');
+      if (t) { const sec = Math.floor(s); t.textContent = `${Math.floor(sec/60)}:${String(sec%60).padStart(2, '0')}`; }
+    };
+    status.querySelector('#rec-cancel').addEventListener('click', () => {
+      state.audioRec?.cancel();
+      state.audioRec = null;
+      composer.classList.remove('recording');
+      status.remove();
     });
-  } catch (e) { /* offline / core not running */ }
+    status.querySelector('#rec-send').addEventListener('click', () => toggleAudioRecording(key, contact));
+  } catch (e) {
+    alert('Micro indisponible : ' + e.message);
+    state.audioRec = null;
+  }
+}
+
+// ─── Thread panel ──────────────────────────────────────────────────
+
+function openThread(contactKey, rootMsg) {
+  state.threadRoot = { contactKey, rootId: rootMsg.id };
+  // Crée le panel s'il n'existe pas
+  let panel = document.getElementById('thread-panel');
+  if (!panel) {
+    panel = document.createElement('aside');
+    panel.id = 'thread-panel';
+    document.getElementById('app').appendChild(panel);
+  }
+  // Cache le right info panel
+  document.getElementById('right-panel').classList.add('hidden');
+  panel.classList.remove('hidden');
+  renderThread();
+}
+
+function renderThread() {
+  if (!state.threadRoot) return;
+  const { contactKey, rootId } = state.threadRoot;
+  const all = state.chats[contactKey] || [];
+  const root = all.find(m => m.id === rootId);
+  if (!root) return;
+  const replies = all.filter(m => m.replyTo === rootId).sort((a, b) => a.date - b.date);
+  const panel = document.getElementById('thread-panel');
+  panel.innerHTML = `
+    <div class="thread-header">
+      <h3>${L('thread.title')}</h3>
+      <button class="modal-close-x" id="thread-close">✕</button>
+    </div>
+    <div class="thread-body" id="thread-body"></div>
+    <div class="thread-composer">
+      <textarea id="thread-input" rows="2" placeholder="${L('thread.reply_placeholder')}"></textarea>
+    </div>
+  `;
+  const body = document.getElementById('thread-body');
+  // Message racine + séparateur
+  body.appendChild(renderMessageRow(root, { showHeader: true, contactKey, threadCount: 0 }));
+  const sep = document.createElement('div');
+  sep.style.cssText = 'padding:6px 18px;color:#9A9AA0;font-size:11px;border-top:1px solid #37373C;margin-top:8px;';
+  sep.textContent = replies.length ? `${replies.length} réponse${replies.length > 1 ? 's' : ''}` : 'Aucune réponse';
+  body.appendChild(sep);
+  for (const r of replies) {
+    body.appendChild(renderMessageRow(r, { showHeader: true, contactKey, threadCount: 0 }));
+  }
+  document.getElementById('thread-close').addEventListener('click', () => {
+    state.threadRoot = null;
+    panel.classList.add('hidden');
+  });
+  const input = document.getElementById('thread-input');
+  input.focus();
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      const t = input.value.trim();
+      if (!t) return;
+      buildAndSendMessage(contactKey, t, null, rootId).then(() => {
+        input.value = '';
+        renderThread();
+      });
+    }
+  });
 }
 
 function onIncomingMessage(p) {
-  if (p.payload?.k !== 'msg') return;
   const key = p.contactKey;
-  const m = {
-    id: p.payload.id,
-    fromMe: false,
-    fromName: p.fromName || 'Pair',
-    text: p.payload.t || '',
-    date: p.payload.ts || Date.now()
-  };
-  state.chats[key] = (state.chats[key] || []).concat(m);
-  if (state.selectedRoute?.kind === 'contact' && state.selectedRoute?.key === key) {
-    renderMessages(key);
+  const payload = p.payload || {};
+  switch (payload.k) {
+    case 'msg': {
+      const contact = state.contacts.find(c => c.key === key);
+      const fromName = contact?.name || key.slice(0, 8);
+      const m = {
+        id: payload.id,
+        fromMe: false,
+        fromName,
+        text: payload.t || '',
+        date: payload.ts || Date.now(),
+        attachment: payload.att || null,
+        replyTo: payload.rt || null,
+        reactions: {},
+      };
+      state.chats[key] = (state.chats[key] || []).concat(m);
+      if (state.selectedRoute?.kind === 'contact' && state.selectedRoute?.key === key) {
+        renderMessages(key);
+      }
+      // Accusé de réception
+      request('peer.send', { contactKey: key, payload: { k: 'ack', ids: [m.id] } }).catch(()=>{});
+      break;
+    }
+    case 'react': {
+      const msg = findMessage(key, payload.id);
+      if (!msg) return;
+      msg.reactions = msg.reactions || {};
+      const reactors = msg.reactions[payload.emoji] || [];
+      if (payload.add) {
+        if (!reactors.includes(key)) reactors.push(key);
+      } else {
+        const idx = reactors.indexOf(key);
+        if (idx >= 0) reactors.splice(idx, 1);
+      }
+      msg.reactions[payload.emoji] = reactors;
+      if (!reactors.length) delete msg.reactions[payload.emoji];
+      if (state.selectedRoute?.key === key) renderMessages(key);
+      break;
+    }
+    case 'del': {
+      const list = state.chats[key] || [];
+      const idx = list.findIndex(m => m.id === payload.id);
+      if (idx >= 0) {
+        list.splice(idx, 1);
+        if (state.selectedRoute?.key === key) renderMessages(key);
+      }
+      break;
+    }
+    case 'ack':
+      // Marquer mes messages comme livrés
+      for (const id of (payload.ids || [])) {
+        const m = findMessage(key, id);
+        if (m) m.delivered = true;
+      }
+      if (state.selectedRoute?.key === key) renderMessages(key);
+      break;
   }
+}
+
+function findMessage(contactKey, id) {
+  return (state.chats[contactKey] || []).find(m => m.id === id);
 }
 
 function renderFilesPlaceholder(key) {
@@ -436,22 +769,8 @@ function renderProfilePanel(c) {
 }
 
 // ── Ajouter un contact ──────────────────────────────────────
-async function addContactFlow() {
-  const code = prompt("Saisis le code d'appairage reçu (cs1-…)\nLaisse vide pour en générer un :");
-  if (code === null) return;
-  if (code.trim()) {
-    try {
-      await request('pairing.acceptInvite', { invite: code.trim() });
-      alert('Demande envoyée — patiente que ton contact accepte.');
-    } catch (e) { alert('Échec : ' + e.message); }
-  } else {
-    try {
-      const r = await request('pairing.createInvite', {});
-      // Le code est typiquement r.invite (cs1-…). Affiche-le pour partage.
-      const inviteCode = r?.invite || r?.code || JSON.stringify(r);
-      prompt('Transmets ce code à ton contact :', inviteCode);
-    } catch (e) { alert('Échec : ' + e.message); }
-  }
+function addContactFlow() {
+  openPairingModal();
 }
 
 // ── Helpers ──────────────────────────────────────────────────

@@ -53,6 +53,24 @@ const dicts = {
     'common.close': 'Fermer',
     'common.clear': 'Effacer',
     'common.help': 'Aide',
+    'common.retry': 'Réessayer',
+    'pairing.title': 'Ajouter un contact',
+    'pairing.invite': 'Inviter',
+    'pairing.join': 'Rejoindre',
+    'pairing.invite_desc': "Génère un code et transmets-le à ton contact. La connexion s'établit automatiquement, chiffrée.",
+    'pairing.generate': 'Générer un code',
+    'pairing.copy': 'Copier',
+    'pairing.copied': 'Copié',
+    'pairing.share_hint': "Partage ce code par n'importe quel canal sûr.",
+    'pairing.waiting': "En attente que ton contact saisisse le code…",
+    'pairing.connected': 'Connecté à %@ !',
+    'pairing.join_desc': "Saisis le code que ton contact t'a communiqué.",
+    'pairing.joining': "Connexion à ton contact…",
+    'pairing.success': 'Connecté !',
+    'thread.title': 'Fil de discussion',
+    'thread.reply_placeholder': 'Répondre dans ce fil…',
+    'thread.replies': '%d réponse(s)',
+    'reactions.add': "Ajouter une réaction",
   },
   en: {
     'settings.title': 'Settings',
@@ -105,8 +123,29 @@ const dicts = {
     'common.close': 'Close',
     'common.clear': 'Clear',
     'common.help': 'Help',
+    'common.retry': 'Retry',
+    'pairing.title': 'Add a contact',
+    'pairing.invite': 'Invite',
+    'pairing.join': 'Join',
+    'pairing.invite_desc': 'Generate a code and share it with your contact. The connection is established automatically and encrypted.',
+    'pairing.generate': 'Generate a code',
+    'pairing.copy': 'Copy',
+    'pairing.copied': 'Copied',
+    'pairing.share_hint': 'Share this code through any safe channel.',
+    'pairing.waiting': 'Waiting for your contact to enter the code…',
+    'pairing.connected': 'Connected to %@!',
+    'pairing.join_desc': 'Enter the code your contact sent you.',
+    'pairing.joining': 'Connecting to your contact…',
+    'pairing.success': 'Connected!',
+    'thread.title': 'Thread',
+    'thread.reply_placeholder': 'Reply in this thread…',
+    'thread.replies': '%d reply(ies)',
+    'reactions.add': 'Add a reaction',
   },
 };
+
+// String interpolation: support %@ pour la cohérence Mac.
+const _origL = (key) => dicts[currentLang]?.[key] ?? dicts.fr[key] ?? key;
 
 let currentLang = 'fr';
 
@@ -117,6 +156,13 @@ export async function loadLanguage() {
   currentLang = dicts[choice] ? choice : 'fr';
 }
 
-export function L(key) {
-  return dicts[currentLang]?.[key] ?? dicts.fr[key] ?? key;
+export function L(key, ...args) {
+  let s = _origL(key);
+  // Substitution simple : remplace %@ (style Mac) ou %d/%s par les args dans l'ordre.
+  let i = 0;
+  s = s.replace(/%@|%[sd]/g, () => {
+    const v = args[i++];
+    return v == null ? '' : String(v);
+  });
+  return s;
 }
