@@ -4,7 +4,15 @@
 
 import { L } from './i18n.js';
 
-const { config, pat, dialog, relaunch, kdrive, openExternal, version } = window.crocshare;
+// Lazy access pour résister à un preload pas encore prêt à l'import du module.
+const cs = () => window.crocshare;
+const config = { get: () => cs().config.get(), set: (o) => cs().config.set(o) };
+const pat = { get: () => cs().pat.get(), set: (v) => cs().pat.set(v), clear: () => cs().pat.clear() };
+const dialog = { pickFolder: () => cs().dialog.pickFolder(), pickFile: (o) => cs().dialog.pickFile(o) };
+const relaunch = () => cs().relaunch();
+const kdrive = { test: (p) => cs().kdrive.test(p) };
+const openExternal = (u) => cs().openExternal(u);
+const version = () => cs().version();
 
 const RETENTION_OPTIONS = [
   { value: 0,   labelKey: 'retention.never' },

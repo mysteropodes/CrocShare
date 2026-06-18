@@ -1,7 +1,9 @@
 // Modale d'appairage type Mac : 2 onglets « Inviter » / « Rejoindre ».
 import { L } from './i18n.js';
 
-const { request } = window.crocshare;
+// Lazy : window.crocshare peut ne pas être encore prêt à l'import du module.
+const cs = () => window.crocshare;
+const request = (...a) => cs().request(...a);
 
 export function openPairingModal() {
   const overlay = document.createElement('div');
@@ -80,7 +82,7 @@ export function openPairingModal() {
         });
       });
       // Quand un peer.connected arrive pour un nouveau contact, on ferme.
-      const dispose = window.crocshare.onEvent(evt => {
+      const dispose = cs().onEvent(evt => {
         if (evt.event === 'peer.connected') {
           dispose();
           overlay.querySelector('.pairing-body').innerHTML = `

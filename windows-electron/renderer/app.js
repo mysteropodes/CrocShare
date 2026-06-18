@@ -10,7 +10,15 @@ import {
   AudioRecorder, renderAttachment, openLightbox
 } from './chat-features.js';
 
-const { request, onEvent, openExternal, version, platform, storagePath, config } = window.crocshare;
+// Lazy : preload n'est peut-être pas encore prêt à l'évaluation du module.
+const cs = () => window.crocshare;
+const request = (...a) => cs().request(...a);
+const onEvent = (cb) => cs().onEvent(cb);
+const openExternal = (u) => cs().openExternal(u);
+const version = () => cs().version();
+const platform = () => cs().platform();
+const storagePath = () => cs().storagePath();
+const config = { get: () => cs().config.get(), set: (o) => cs().config.set(o) };
 // Expose le state au module Settings.
 window.crocshareState = null;
 
@@ -36,7 +44,13 @@ const QUICK_TEST_BOT = {
 
 // ── Bootstrap ─────────────────────────────────────────────────
 async function init() {
-  console.log('CrocShare Windows', await version(), '/', await platform());
+  console.log('CrocShare Windows boot');
+  // CRITIQUE : on attache les listeners de la sidebar AVANT tout await
+  // pour que l'UI reste interactive même si le core P2P tarde à démarrer.
+  setupSidebarActions();
+  renderSidebar();
+
+  console.log('CrocShare Windows', await version().catch(()=>'?'), '/', await platform().catch(()=>'?'));
 
   // Charge la langue avant tout rendu.
   await loadLanguage();
@@ -82,8 +96,7 @@ async function init() {
   } catch (e) { /* ignore */ }
 
   onEvent(handleCoreEvent);
-
-  setupSidebarActions();
+  // Re-render après init (myName / contacts à jour)
   renderSidebar();
 }
 
@@ -135,11 +148,26 @@ function setupSidebarActions() {
     });
   });
 
-  document.getElementById('add-contact-btn').addEventListener('click', async (e) => {
-    e.stopPropagation();
-    addContactFlow();
+  // Délégation globale : tout clic sur un "+" de section, ou sur le bouton
+  // welcome, ouvre la modale d'appairage. Robuste même si les éléments sont
+  // re-rendus.
+  document.body.addEventListener('click', (e) => {
+    const target = e.target;
+    if (!target) return;
+    // "+" des sections sidebar
+    if (target.classList?.contains('section-add')) {
+      e.stopPropagation();
+      console.log('add contact via section-add');
+      addContactFlow();
+      return;
+    }
+    // Bouton "Ajouter un contact…" du welcome
+    if (target.id === 'welcome-pair') {
+      console.log('add contact via welcome');
+      addContactFlow();
+      return;
+    }
   });
-  document.getElementById('welcome-pair').addEventListener('click', addContactFlow);
 
   document.querySelectorAll('.section-header').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -147,7 +175,8 @@ function setupSidebarActions() {
       const list = btn.nextElementSibling;
       const collapsed = list.style.display === 'none';
       list.style.display = collapsed ? 'flex' : 'none';
-      btn.querySelector('.chev').textContent = collapsed ? '▼' : '▶';
+      const chev = btn.querySelector('.chev');
+      if (chev) chev.textContent = collapsed ? '▼' : '▶';
     });
   });
 }

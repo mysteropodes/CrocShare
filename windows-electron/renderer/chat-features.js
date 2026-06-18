@@ -8,7 +8,11 @@
 
 import { L } from './i18n.js';
 
-const { request, dialog, openExternal } = window.crocshare;
+// Lazy : preload n'est peut-être pas encore exposé à l'import du module.
+const cs = () => window.crocshare;
+const request = (...a) => cs().request(...a);
+const dialog = { pickFile: (o) => cs().dialog.pickFile(o) };
+const openExternal = (u) => cs().openExternal(u);
 
 export const QUICK_EMOJIS = ['👍', '❤️', '😂', '🎉', '👀', '✅', '🙏', '🔥'];
 
