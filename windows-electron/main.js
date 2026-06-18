@@ -4,7 +4,7 @@
 // spawnant comme child_process. La communication suit le MÊME protocole JSON
 // qu'utilise CoreBridge.swift (request/response + events sur stdin/stdout).
 
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, utilityProcess } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -87,43 +87,88 @@ function createWindow() {
 // Compagnon Node (core/index.js)
 // ────────────────────────────────────────────────────────────────────────────
 
+function coreLogPath() { return path.join(app.getPath('userData'), 'core.log'); }
+function appendCoreLog(line) {
+  try {
+    fs.mkdirSync(path.dirname(coreLogPath()), { recursive: true });
+    fs.appendFileSync(coreLogPath(), `[${new Date().toISOString()}] ${line}\n`);
+  } catch {}
+}
+
+let coreRestartCount = 0;
+
 function startCore() {
   const indexPath = path.join(corePath, 'index.js');
   if (!fs.existsSync(indexPath)) {
-    console.error(`Core not found at ${indexPath}`);
+    appendCoreLog(`ERROR core not found at ${indexPath}`);
     dialog.showErrorBox('CrocShare', `P2P companion not found at ${indexPath}`);
     return;
   }
 
-  // En prod sur Windows, on bundle son propre node.exe via electron-builder.
-  // En dev, on utilise le node de l'env.
-  const nodeBin = isDev ? 'node' : process.execPath;
+  // Choix du binaire Node :
+  //  - dev : `node` du PATH
+  //  - prod : un vrai node.exe (Win) ou node (Mac) bundlé en extraResources.
+  //    On évite ELECTRON_RUN_AS_NODE qui pose des problèmes d'ABI avec les
+  //    modules natifs (sodium-native, udx-native).
+  let nodeBin;
+  if (isDev) {
+    nodeBin = 'node';
+  } else if (process.platform === 'win32') {
+    nodeBin = path.join(process.resourcesPath, 'node-win', 'node.exe');
+  } else if (process.platform === 'darwin') {
+    nodeBin = path.join(process.resourcesPath, 'runtime', 'node');
+  } else {
+    nodeBin = 'node'; // Linux : on suppose node système.
+  }
+  if (process.platform !== 'win32' && !isDev) {
+    // S'assurer qu'il est exécutable (extraResources préserve normalement,
+    // mais belt+suspenders pour macOS).
+    try { fs.chmodSync(nodeBin, 0o755); } catch {}
+  }
+  appendCoreLog(`Starting core: ${nodeBin} ${indexPath} (cwd: ${corePath}, isDev=${isDev}, exists=${fs.existsSync(nodeBin)})`);
+  appendCoreLog(`process.execPath=${process.execPath}`);
 
-  coreProc = spawn(nodeBin, [indexPath], {
-    cwd: corePath,
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',  // permet de réutiliser le node d'Electron
-      CROCSHARE_STORAGE: path.join(app.getPath('userData'), 'p2p-storage')
-    },
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
+  try {
+    coreProc = spawn(nodeBin, [indexPath], {
+      cwd: corePath,
+      env: {
+        ...process.env,
+        CROCSHARE_STORAGE: path.join(app.getPath('userData'), 'p2p-storage'),
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  } catch (e) {
+    appendCoreLog(`ERROR spawn failed: ${e.stack || e.message}`);
+    console.error('core spawn failed:', e);
+    if (++coreRestartCount < 3) setTimeout(startCore, 3000);
+    return;
+  }
+
+  appendCoreLog(`Core spawned pid=${coreProc.pid}`);
 
   coreProc.stdout.on('data', chunk => {
-    // Protocole : 1 JSON par ligne.
-    for (const line of chunk.toString().split('\n')) {
+    const text = chunk.toString();
+    appendCoreLog(`STDOUT: ${text.slice(0, 800)}`);
+    for (const line of text.split('\n')) {
       const t = line.trim();
       if (!t) continue;
       try { dispatchFromCore(JSON.parse(t)); }
-      catch (e) { console.warn('core json parse:', t.slice(0, 80)); }
+      catch (e) { appendCoreLog(`json parse error: ${t.slice(0, 200)}`); }
     }
   });
-  coreProc.stderr.on('data', d => console.error('core stderr:', d.toString()));
+  coreProc.stderr.on('data', d => {
+    const text = d.toString();
+    appendCoreLog(`STDERR: ${text}`);
+    console.error('core stderr:', text);
+  });
   coreProc.on('exit', (code, signal) => {
-    console.warn(`core exited code=${code} signal=${signal}`);
+    appendCoreLog(`Core exited code=${code} signal=${signal}`);
     coreProc = null;
-    // Relance auto après 2 s (sauf si on quitte).
-    if (mainWindow) setTimeout(startCore, 2000);
+    if (mainWindow && ++coreRestartCount < 5) setTimeout(startCore, 2000);
+  });
+  coreProc.on('error', (e) => {
+    appendCoreLog(`Core error: ${e.stack || e.message}`);
   });
 }
 
@@ -224,6 +269,18 @@ ipcMain.handle('file:stat', async (_e, filePath) => {
 ipcMain.handle('file:url', (_e, filePath) => {
   // Convertit en file:// — Chromium peut lire les fichiers locaux.
   return 'file://' + filePath.replace(/\\/g, '/');
+});
+
+// Lecture du log core pour diagnostic depuis l'UI.
+ipcMain.handle('core:log', () => {
+  try { return fs.readFileSync(coreLogPath(), 'utf8'); }
+  catch (e) { return `(log inaccessible: ${e.message})`; }
+});
+ipcMain.handle('core:restart', () => {
+  if (coreProc) { try { coreProc.kill(); } catch {} coreProc = null; }
+  coreRestartCount = 0;
+  startCore();
+  return true;
 });
 
 // Sauvegarde un ArrayBuffer dans un fichier temporaire de l'app (utilisé

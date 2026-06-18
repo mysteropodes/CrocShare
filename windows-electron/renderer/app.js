@@ -72,12 +72,15 @@ async function init() {
       seed,
     });
     state.myPublicKey = r?.publicKey || '';
-    // Si le core a généré une nouvelle seed (1er lancement), on la stocke.
     if (r?.seed) {
       await window.crocshare.config.set({ identitySeed: r.seed });
     }
+    // Met à jour la subtitle sidebar
+    const sub = document.getElementById('me-status');
+    if (sub) sub.textContent = 'P2P chiffré';
   } catch (e) {
     console.warn('init failed:', e);
+    showCoreErrorBanner(e?.message || String(e));
   }
 
   // Contact démo pour visualiser le rendu si le core n'est pas joignable.
@@ -800,6 +803,50 @@ function renderProfilePanel(c) {
 // ── Ajouter un contact ──────────────────────────────────────
 function addContactFlow() {
   openPairingModal();
+}
+
+// ─── Bannière d'erreur core ───────────────────────────────────────
+function showCoreErrorBanner(msg) {
+  let banner = document.getElementById('core-error-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'core-error-banner';
+    banner.style.cssText = 'background:#7f1d1d;color:#fff;padding:8px 14px;font-size:12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #DC2626;';
+    document.getElementById('app').parentNode.insertBefore(banner, document.getElementById('app'));
+  }
+  banner.innerHTML = `
+    <span>⚠ Moteur P2P inactif : ${esc(msg)}</span>
+    <button id="see-log-btn" style="background:#fff;color:#7f1d1d;border:none;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;">Voir le journal</button>
+    <button id="restart-core-btn" style="background:transparent;color:#fff;border:1px solid #fff;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;">Relancer</button>
+    <button id="copy-log-btn" style="background:transparent;color:#fff;border:1px solid #fff;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;">Copier le log</button>
+  `;
+  document.getElementById('see-log-btn').onclick = async () => {
+    const log = await window.crocshare.core.log();
+    const w = window.open('', '_blank', 'width=700,height=500');
+    if (w) {
+      w.document.body.style.cssText = 'background:#111;color:#0f0;font-family:monospace;padding:14px;white-space:pre-wrap;';
+      w.document.body.textContent = log;
+    } else {
+      alert(log.slice(0, 4000));
+    }
+  };
+  document.getElementById('restart-core-btn').onclick = async () => {
+    await window.crocshare.core.restart();
+    setTimeout(() => location.reload(), 1500);
+  };
+  document.getElementById('copy-log-btn').onclick = async () => {
+    const log = await window.crocshare.core.log();
+    navigator.clipboard.writeText(log).then(() => {
+      const btn = document.getElementById('copy-log-btn');
+      if (btn) { btn.textContent = '✓ Copié'; setTimeout(() => { btn.textContent = 'Copier le log'; }, 1500); }
+    });
+  };
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
 }
 
 // ── Helpers ──────────────────────────────────────────────────

@@ -62,4 +62,10 @@ contextBridge.exposeInMainWorld('crocshare', {
   fileStat: (filePath) => ipcRenderer.invoke('file:stat', filePath),
   fileUrl: (filePath) => ipcRenderer.invoke('file:url', filePath),
   saveTempBuffer: (name, buffer) => ipcRenderer.invoke('file:saveTempBuffer', name, buffer),
+
+  // Diagnostic du compagnon P2P (utile au support).
+  core: {
+    log: () => ipcRenderer.invoke('core:log'),
+    restart: () => ipcRenderer.invoke('core:restart'),
+  },
 });
